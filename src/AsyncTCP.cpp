@@ -179,7 +179,7 @@ static inline bool _get_async_event(lwip_tcp_event_packet_t **e) {
     if consecutive user callback for a same connection runs longer that poll time then it will fill the queue with events until it deadlocks.
     This is a workaround to mitigate such poor designs and won't let other events/connections to starve the task time.
     It won't be effective if user would run multiple simultaneous long running callbacks due to message interleaving.
-    todo: implement some kind of fair dequeing or (better) simply punish user for a bad designed callbacks by resetting hog connections
+    todo: implement some kind of fair dequeuing or (better) simply punish user for a bad designed callbacks by resetting hog connections
   */
   lwip_tcp_event_packet_t *next_pkt = NULL;
   while (xQueuePeek(_async_queue, &next_pkt, 0) == pdPASS) {
@@ -386,7 +386,7 @@ static int8_t _tcp_connected(void *arg, tcp_pcb *pcb, int8_t err) {
 }
 
 static int8_t _tcp_poll(void *arg, struct tcp_pcb *pcb) {
-  // throttle polling events queing when event queue is getting filled up, let it handle _onack's
+  // throttle polling events queueing when event queue is getting filled up, let it handle _onack's
   // log_d("qs:%u", uxQueueMessagesWaiting(_async_queue));
   if (uxQueueMessagesWaiting(_async_queue) > (rand() % CONFIG_ASYNC_TCP_QUEUE_SIZE / 2 + CONFIG_ASYNC_TCP_QUEUE_SIZE / 4)) {
     log_d("throttling");
