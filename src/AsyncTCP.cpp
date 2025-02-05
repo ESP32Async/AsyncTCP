@@ -427,10 +427,11 @@ static int8_t _tcp_connected(void *arg, tcp_pcb *pcb, int8_t err) {
   DEBUG_PRINTF("+C: 0x%08x", pcb);
   AsyncClient *client = reinterpret_cast<AsyncClient *>(arg);
   lwip_tcp_event_packet_t *e = _alloc_event(LWIP_TCP_CONNECTED, client, pcb);
-  if (e) {
-    e->connected.err = err;
-    _send_async_event(e);
+  if (e == nullptr) {
+    return ERR_MEM;
   }
+  e->connected.err = err;
+  _send_async_event(e);
   return ERR_OK;
 }
 
@@ -438,27 +439,31 @@ static int8_t _tcp_poll(void *arg, struct tcp_pcb *pcb) {
   DEBUG_PRINTF("+P: 0x%08x", pcb);
   AsyncClient *client = reinterpret_cast<AsyncClient *>(arg);
   lwip_tcp_event_packet_t *e = _alloc_event(LWIP_TCP_POLL, client, pcb);
-  if (e != nullptr) {
-    _send_async_event(e);
+  if (e == nullptr) {
+    return ERR_MEM;
   }
+  _send_async_event(e);
   return ERR_OK;
 }
 
 static int8_t _tcp_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *pb, int8_t err) {
   AsyncClient *client = reinterpret_cast<AsyncClient *>(arg);
   lwip_tcp_event_packet_t *e = _alloc_event(LWIP_TCP_RECV, client, pcb);
-  if (e != nullptr) {
-    if (pb) {
-      DEBUG_PRINTF("+R: 0x%08x", pcb);
-      e->recv.pb = pb;
-      e->recv.err = err;
-    } else {
-      DEBUG_PRINTF("+F: 0x%08x -> 0x%08x", pcb, arg);
-      e->event = LWIP_TCP_FIN;
-      e->fin.err = err;
-    }
-    _send_async_event(e);
+  if (e == nullptr) {
+    return ERR_MEM;
   }
+
+  if (pb) {
+    DEBUG_PRINTF("+R: 0x%08x", pcb);
+    e->recv.pb = pb;
+    e->recv.err = err;
+  } else {
+    DEBUG_PRINTF("+F: 0x%08x -> 0x%08x", pcb, arg);
+    e->event = LWIP_TCP_FIN;
+    e->fin.err = err;
+  }
+  _send_async_event(e);
+
   return ERR_OK;
 }
 
@@ -466,10 +471,11 @@ static int8_t _tcp_sent(void *arg, struct tcp_pcb *pcb, uint16_t len) {
   DEBUG_PRINTF("+S: 0x%08x", pcb);
   AsyncClient *client = reinterpret_cast<AsyncClient *>(arg);
   lwip_tcp_event_packet_t *e = _alloc_event(LWIP_TCP_SENT, client, pcb);
-  if (e != nullptr) {
-    e->sent.len = len;
-    _send_async_event(e);
+  if (e == nullptr) {
+    return ERR_MEM;
   }
+  e->sent.len = len;
+  _send_async_event(e);
   return ERR_OK;
 }
 
@@ -504,13 +510,12 @@ static void _tcp_dns_found(const char *name, struct ip_addr *ipaddr, void *arg) 
 // Runs on LWIP thread
 static int8_t _tcp_accept(AsyncServer *server, AsyncClient *client) {
   lwip_tcp_event_packet_t *e = _alloc_event(LWIP_TCP_ACCEPT, client, client->pcb());
-  if (e) {
-    e->accept.server = server;
-    _send_async_event(e);
-    return ERR_OK;
-  } else {
+  if (e == nullptr) {
     return ERR_MEM;
   }
+  e->accept.server = server;
+  _send_async_event(e);
+  return ERR_OK;
 }
 
 /*
