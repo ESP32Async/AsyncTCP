@@ -123,7 +123,7 @@ static lwip_tcp_event_packet_t *_alloc_event(lwip_tcp_event_t event, AsyncClient
     return nullptr;
   }
 
-  lwip_tcp_event_packet_t *e = (lwip_tcp_event_packet_t *)malloc(sizeof(lwip_tcp_event_packet_t));
+  auto *e = new (std::nothrow) lwip_tcp_event_packet_t{nullptr, event, client};
 
   if (!e) {
     // Allocation fail - abort client and give up
@@ -135,9 +135,6 @@ static lwip_tcp_event_packet_t *_alloc_event(lwip_tcp_event_t event, AsyncClient
     return nullptr;
   }
 
-  e->next = nullptr;
-  e->event = event;
-  e->client = client;
 #ifdef ASYNCTCP_VALIDATE_PCB
   e->pcb = pcb;
 #endif
@@ -151,7 +148,7 @@ static void _free_event(lwip_tcp_event_packet_t *evpkt) {
     // We must free the packet buffer
     pbuf_free(evpkt->recv.pb);
   }
-  free(evpkt);
+  delete evpkt;
 }
 
 // Global variables
