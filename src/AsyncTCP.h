@@ -51,10 +51,6 @@ extern "C" {
 #define CONFIG_ASYNC_TCP_MAX_ACK_TIME 5000
 #endif
 
-#ifndef CONFIG_ASYNCTCP_HAS_INTRUSIVE_LIST
-#define CONFIG_ASYNCTCP_HAS_INTRUSIVE_LIST 1
-#endif
-
 class AsyncClient;
 
 #define ASYNC_WRITE_FLAG_COPY 0x01  // will allocate new buffer to hold the data while sending (else will hold reference to the data given)
@@ -276,13 +272,6 @@ protected:
   int8_t _recv(pbuf *pb, int8_t err);
   void _dns_found(struct ip_addr *ipaddr);
   int8_t _recved(size_t len);
-
-#ifdef CONFIG_ASYNC_TCP_CLIENT_LIST
-public:
-  AsyncClient *prev;
-  AsyncClient *next;
-  AsyncClient &operator+=(const AsyncClient &other);
-#endif
 };
 
 class AsyncServer {
