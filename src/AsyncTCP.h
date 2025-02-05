@@ -47,12 +47,12 @@ extern "C" {
 #define CONFIG_ASYNC_TCP_PRIORITY 10
 #endif
 
-#ifndef CONFIG_ASYNC_TCP_QUEUE_SIZE
-#define CONFIG_ASYNC_TCP_QUEUE_SIZE 64
-#endif
-
 #ifndef CONFIG_ASYNC_TCP_MAX_ACK_TIME
 #define CONFIG_ASYNC_TCP_MAX_ACK_TIME 5000
+#endif
+
+#ifndef CONFIG_ASYNCTCP_HAS_INTRUSIVE_LIST
+#define CONFIG_ASYNCTCP_HAS_INTRUSIVE_LIST 1
 #endif
 
 class AsyncClient;
@@ -69,6 +69,8 @@ typedef std::function<void(void *, AsyncClient *, uint32_t time)> AcTimeoutHandl
 
 struct tcp_pcb;
 struct ip_addr;
+class AsyncClient_detail;
+struct lwip_tcp_event_packet_t;
 
 class AsyncClient {
 public:
@@ -76,13 +78,12 @@ public:
   ~AsyncClient();
 
   AsyncClient &operator=(const AsyncClient &other);
-  AsyncClient &operator+=(const AsyncClient &other);
 
   bool operator==(const AsyncClient &other);
-
   bool operator!=(const AsyncClient &other) {
     return !(*this == other);
   }
+
   bool connect(const IPAddress &ip, uint16_t port);
 #if ESP_IDF_VERSION_MAJOR < 5
   bool connect(const IPv6Address &ip, uint16_t port);
@@ -144,7 +145,7 @@ public:
   size_t write(const char *data, size_t size, uint8_t apiflags = ASYNC_WRITE_FLAG_COPY);
 
   /**
-     * @brief add and enqueue data for sending
+     * @brief add and enque data for sending
      * @note treats data as null-terminated string
      *
      * @param data
@@ -211,7 +212,6 @@ public:
   // set callback - data received (called if onPacket is not used)
   void onData(AcDataHandler cb, void *arg = 0);
   // set callback - data received
-  // !!! You MUST call ackPacket() or free the pbuf yourself to prevent memory leaks
   void onPacket(AcPacketHandler cb, void *arg = 0);
   // set callback - ack timeout
   void onTimeout(AcTimeoutHandler cb, void *arg = 0);
@@ -230,26 +230,13 @@ public:
   static const char *errorToString(int8_t error);
   const char *stateToString();
 
-  // internal callbacks - Do NOT call any of the functions below in user code!
-  static int8_t _s_poll(void *arg, struct tcp_pcb *tpcb);
-  static int8_t _s_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *pb, int8_t err);
-  static int8_t _s_fin(void *arg, struct tcp_pcb *tpcb, int8_t err);
-  static int8_t _s_lwip_fin(void *arg, struct tcp_pcb *tpcb, int8_t err);
-  static void _s_error(void *arg, int8_t err);
-  static int8_t _s_sent(void *arg, struct tcp_pcb *tpcb, uint16_t len);
-  static int8_t _s_connected(void *arg, struct tcp_pcb *tpcb, int8_t err);
-  static void _s_dns_found(const char *name, struct ip_addr *ipaddr, void *arg);
-
-  int8_t _recv(tcp_pcb *pcb, pbuf *pb, int8_t err);
   tcp_pcb *pcb() {
     return _pcb;
   }
 
 protected:
-  bool _connect(ip_addr_t addr, uint16_t port);
-
   tcp_pcb *_pcb;
-  int8_t _closed_slot;
+  lwip_tcp_event_packet_t *_end_event;
 
   AcConnectHandler _connect_cb;
   void *_connect_cb_arg;
@@ -277,20 +264,25 @@ protected:
   uint32_t _ack_timeout;
   uint16_t _connect_port;
 
+  friend class AsyncClient_detail;
+  bool _connect(ip_addr_t addr, uint16_t port);
   int8_t _close();
-  void _free_closed_slot();
-  bool _allocate_closed_slot();
-  int8_t _connected(tcp_pcb *pcb, int8_t err);
+  int8_t _connected(int8_t err);
   void _error(int8_t err);
-  int8_t _poll(tcp_pcb *pcb);
-  int8_t _sent(tcp_pcb *pcb, uint16_t len);
-  int8_t _fin(tcp_pcb *pcb, int8_t err);
+  int8_t _poll();
+  int8_t _sent(uint16_t len);
+  int8_t _fin(int8_t err);
   int8_t _lwip_fin(tcp_pcb *pcb, int8_t err);
+  int8_t _recv(pbuf *pb, int8_t err);
   void _dns_found(struct ip_addr *ipaddr);
+  int8_t _recved(size_t len);
 
+#ifdef CONFIG_ASYNC_TCP_CLIENT_LIST
 public:
   AsyncClient *prev;
   AsyncClient *next;
+  AsyncClient &operator+=(const AsyncClient &other);
+#endif
 };
 
 class AsyncServer {
@@ -325,6 +317,7 @@ protected:
   AcConnectHandler _connect_cb;
   void *_connect_cb_arg;
 
+  friend class AsyncClient_detail;
   int8_t _accept(tcp_pcb *newpcb, int8_t err);
   int8_t _accepted(AsyncClient *client);
 };
