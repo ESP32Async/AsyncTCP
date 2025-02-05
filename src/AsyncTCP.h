@@ -81,8 +81,10 @@ public:
   AsyncClient(AsyncClient &&) = delete;
   AsyncClient &operator=(AsyncClient &&) = delete;
 
-  bool operator==(const AsyncClient &other);
-  bool operator!=(const AsyncClient &other) {
+  inline bool operator==(const AsyncClient &other) {
+    return _pcb == other._pcb;
+  }
+  inline bool operator!=(const AsyncClient &other) {
     return !(*this == other);
   }
 

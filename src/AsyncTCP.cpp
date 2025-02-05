@@ -705,14 +705,6 @@ AsyncClient::~AsyncClient() {
 }
 
 /*
- * Operators
- * */
-
-bool AsyncClient::operator==(const AsyncClient &other) {
-  return _pcb == other._pcb;
-}
-
-/*
  * Callback Setters
  * */
 
