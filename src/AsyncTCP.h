@@ -145,7 +145,7 @@ public:
   size_t write(const char *data, size_t size, uint8_t apiflags = ASYNC_WRITE_FLAG_COPY);
 
   /**
-     * @brief add and enque data for sending
+     * @brief add and enqueue data for sending
      * @note treats data as null-terminated string
      *
      * @param data

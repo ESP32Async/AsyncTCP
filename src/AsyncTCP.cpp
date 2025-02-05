@@ -164,7 +164,7 @@ class queue_mutex_guard {
   bool holds_mutex;
 
 public:
-  inline queue_mutex_guard() : holds_mutex(xSemaphoreTake(_async_queue_mutex, portMAX_DELAY)) {};
+  inline queue_mutex_guard() : holds_mutex(xSemaphoreTake(_async_queue_mutex, portMAX_DELAY)){};
   inline ~queue_mutex_guard() {
     if (holds_mutex) {
       xSemaphoreGive(_async_queue_mutex);
