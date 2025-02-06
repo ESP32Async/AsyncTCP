@@ -1618,20 +1618,19 @@ void AsyncServer::end() {
 int8_t AsyncServer::_accept(tcp_pcb *pcb, int8_t err) {
   // ets_printf("+A: 0x%08x\n", pcb);
   if (_connect_cb) {
-    AsyncClient *c = new AsyncClient(pcb);
+    AsyncClient *c = new(std::nothrow) AsyncClient(pcb);
     if (c) {
       c->setNoDelay(_noDelay);
       const int8_t err = _tcp_accept(this, c);
       if (err != ERR_OK) {
+        tcp_abort(pcb);
         delete c;
       }
       return err;
     }
   }
-  if (tcp_close(pcb) != ERR_OK) {
-    tcp_abort(pcb);
-  }
-  log_d("FAIL");
+  tcp_abort(pcb);
+  log_d("_accept failed");
   return ERR_OK;
 }
 
