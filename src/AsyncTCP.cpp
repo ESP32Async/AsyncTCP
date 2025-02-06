@@ -284,7 +284,7 @@ static lwip_tcp_event_packet_t *_register_pcb(tcp_pcb *pcb, AsyncClient *client)
     tcp_recv(pcb, &_tcp_recv);
     tcp_sent(pcb, &_tcp_sent);
     tcp_err(pcb, &_tcp_error);
-    tcp_poll(pcb, &_tcp_poll, 1);
+    tcp_poll(pcb, &_tcp_poll, CONFIG_ASYNC_TCP_POLL_TIMER);
   };
   return end_event;
 }
