@@ -765,14 +765,13 @@ bool AsyncClient::_connect(ip_addr_t addr, uint16_t port) {
   }
 
   TCP_MUTEX_LOCK();
-  tcp_pcb *pcb = tcp_new_ip_type(addr.type);
-  if (!pcb) {
+  _pcb = tcp_new_ip_type(addr.type);
+  if (!_pcb) {
     TCP_MUTEX_UNLOCK();
     log_e("pcb == NULL");
     return false;
   }
   _end_event = _register_pcb(_pcb, this);
-  TCP_MUTEX_UNLOCK();
 
   if (!_end_event) {
     log_e("Unable to allocate event");
@@ -780,6 +779,7 @@ bool AsyncClient::_connect(ip_addr_t addr, uint16_t port) {
     _pcb = nullptr;
     return false;
   }
+  TCP_MUTEX_UNLOCK();
 
   tcp_api_call_t msg;
   msg.pcb_ptr = &_pcb;
