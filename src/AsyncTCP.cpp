@@ -634,9 +634,6 @@ static esp_err_t _tcp_abort(tcp_pcb **pcb_ptr) {
 
 static err_t _tcp_connect_api(struct tcpip_api_call_data *api_call_msg) {
   tcp_api_call_t *msg = (tcp_api_call_t *)api_call_msg;
-  Serial.printf("Attempting connection with PCB %08X, ", (intptr_t)*msg->pcb_ptr);
-  Serial.print(IPAddress(msg->connect.addr));
-  Serial.printf(", port %d\n", msg->connect.port);
   msg->err = tcp_connect(*msg->pcb_ptr, msg->connect.addr, msg->connect.port, msg->connect.cb);
   return msg->err;
 }
