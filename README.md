@@ -44,7 +44,7 @@ I personally use the following configuration in my projects:
 ```c++
   -D CONFIG_ASYNC_TCP_MAX_ACK_TIME=5000 // (keep default)
   -D CONFIG_ASYNC_TCP_PRIORITY=10 // (keep default)
-  -D CONFIG_ASYNC_TCP_QUEUE_SIZE=64 // (keep default)
+  -D CONFIG_ASYNC_TCP_QUEUE_SIZE=128 // (keep default)
   -D CONFIG_ASYNC_TCP_RUNNING_CORE=1 // force async_tcp task to be on same core as the app (default is core 0)
   -D CONFIG_ASYNC_TCP_STACK_SIZE=4096 // reduce the stack size (default is 16K)
 ```

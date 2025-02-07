@@ -126,11 +126,11 @@ static inline bool _init_async_event_queue() {
   return true;
 }
 
-static inline bool _send_async_event(lwip_tcp_event_packet_t **e, TickType_t wait = portMAX_DELAY) {
+static inline bool _send_async_event(lwip_tcp_event_packet_t **e, TickType_t wait = 0) {
   return _async_queue && xQueueSend(_async_queue, e, wait) == pdPASS;
 }
 
-static inline bool _prepend_async_event(lwip_tcp_event_packet_t **e, TickType_t wait = portMAX_DELAY) {
+static inline bool _prepend_async_event(lwip_tcp_event_packet_t **e, TickType_t wait = 0) {
   return _async_queue && xQueueSendToFront(_async_queue, e, wait) == pdPASS;
 }
 
@@ -374,6 +374,7 @@ static int8_t _tcp_connected(void *arg, tcp_pcb *pcb, int8_t err) {
   if (!_prepend_async_event(&e)) {
     free((void *)(e));
     log_e("Failed to queue event: LWIP_TCP_CONNECTED");
+    tcp_abort(pcb);
     return ERR_TIMEOUT;
   }
   return ERR_OK;
@@ -400,6 +401,7 @@ static int8_t _tcp_poll(void *arg, struct tcp_pcb *pcb) {
   if (!_send_async_event(&e, 0)) {
     free((void *)(e));
     log_e("Failed to queue event: LWIP_TCP_POLL");
+    tcp_abort(pcb);
     return ERR_TIMEOUT;
   }
   return ERR_OK;
@@ -429,6 +431,7 @@ static int8_t _tcp_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *pb, int8_t 
   if (!_send_async_event(&e)) {
     free((void *)(e));
     log_e("Failed to queue event: LWIP_TCP_RECV or LWIP_TCP_FIN");
+    tcp_abort(pcb);
     return ERR_TIMEOUT;
   }
   return ERR_OK;
@@ -448,6 +451,7 @@ static int8_t _tcp_sent(void *arg, struct tcp_pcb *pcb, uint16_t len) {
   if (!_send_async_event(&e)) {
     free((void *)(e));
     log_e("Failed to queue event: LWIP_TCP_SENT");
+    tcp_abort(pcb);
     return ERR_TIMEOUT;
   }
   return ERR_OK;
@@ -503,6 +507,7 @@ static int8_t _tcp_accept(void *arg, AsyncClient *client) {
   if (!_prepend_async_event(&e)) {
     free((void *)(e));
     log_e("Failed to queue event: LWIP_TCP_ACCEPT");
+    client->abort();
     return ERR_TIMEOUT;
   }
   return ERR_OK;
@@ -1637,28 +1642,32 @@ int8_t AsyncServer::_accept(tcp_pcb *pcb, int8_t err) {
     return ERR_ABRT;
   }
   if (_connect_cb) {
-    AsyncClient *c = new (std::nothrow) AsyncClient(pcb);
-    if (c && c->pcb()) {
-      c->setNoDelay(_noDelay);
-      if (_tcp_accept(this, c) == ERR_OK) {
-        return ERR_OK;  // success
+    if (uxQueueMessagesWaiting(_async_queue) < CONFIG_ASYNC_TCP_QUEUE_SIZE * 90 / 100) {
+      AsyncClient *c = new (std::nothrow) AsyncClient(pcb);
+      if (c && c->pcb()) {
+        c->setNoDelay(_noDelay);
+        if (_tcp_accept(this, c) == ERR_OK) {
+          return ERR_OK;  // success
+        }
+        // Couldn't allocate accept event
+        // We can't let the client object call in to close, as we're on the LWIP thread; it could deadlock trying to RPC to itself
+        c->_pcb = nullptr;
+        tcp_abort(pcb);
+        log_e("_accept failed: couldn't accept client");
+        return ERR_ABRT;
       }
-      // Couldn't allocate accept event
-      // We can't let the client object call in to close, as we're on the LWIP thread; it could deadlock trying to RPC to itself
-      c->_pcb = nullptr;
-      tcp_abort(pcb);
-      log_e("_accept failed: couldn't accept client");
-      return ERR_ABRT;
+      if (c) {
+        // Couldn't complete setup
+        // pcb has already been aborted
+        delete c;
+        pcb = nullptr;
+        log_e("_accept failed: couldn't complete setup");
+        return ERR_ABRT;
+      }
+      log_e("_accept failed: couldn't allocate client");
+    } else {
+      log_e("_accept failed: queue full");
     }
-    if (c) {
-      // Couldn't complete setup
-      // pcb has already been aborted
-      delete c;
-      pcb = nullptr;
-      log_e("_accept failed: couldn't complete setup");
-      return ERR_ABRT;
-    }
-    log_e("_accept failed: couldn't allocate client");
   } else {
     log_e("_accept failed: no onConnect callback");
   }
