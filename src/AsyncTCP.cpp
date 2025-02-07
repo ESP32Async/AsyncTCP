@@ -128,11 +128,11 @@ static inline bool _init_async_event_queue() {
   return true;
 }
 
-static inline bool _send_async_event(lwip_tcp_event_packet_t **e, TickType_t wait = portMAX_DELAY) {
+static inline bool _send_async_event(lwip_tcp_event_packet_t **e, TickType_t wait = 0) {
   return _async_queue && xQueueSend(_async_queue, e, wait) == pdPASS;
 }
 
-static inline bool _prepend_async_event(lwip_tcp_event_packet_t **e, TickType_t wait = portMAX_DELAY) {
+static inline bool _prepend_async_event(lwip_tcp_event_packet_t **e, TickType_t wait = 0) {
   return _async_queue && xQueueSendToFront(_async_queue, e, wait) == pdPASS;
 }
 
