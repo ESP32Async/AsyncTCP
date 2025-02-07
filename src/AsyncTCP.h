@@ -269,7 +269,7 @@ protected:
   uint16_t _connect_port;
 
   friend class AsyncClient_detail;
-  bool _connect(ip_addr_t addr, uint16_t port);
+  bool _connect(const ip_addr_t &addr, uint16_t port);
   int8_t _close();
   int8_t _connected(int8_t err);
   void _error(int8_t err);
