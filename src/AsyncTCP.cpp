@@ -1465,12 +1465,6 @@ int8_t AsyncServer::_accept(tcp_pcb *pcb, int8_t err) {
           return ERR_OK;  // success
         }
       }
-      if (c->pcb()) {
-        // Couldn't allocate accept event
-        // We can't let the client object call in to close, as we're on the LWIP thread; it could deadlock trying to RPC to itself
-        AsyncClient_detail::invalidate_pcb(*c);
-        tcp_abort(pcb);
-      }
       if (c) {
         // Couldn't complete setup
         // pcb has already been aborted
