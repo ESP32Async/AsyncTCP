@@ -95,6 +95,7 @@ public:
   bool connect(const char *host, uint16_t port);
   /**
      * @brief close connection
+     * @note will call onDisconnect callback
      *
      * @param now - ignored
      */
@@ -103,6 +104,13 @@ public:
   void stop() {
     close(false);
   };
+
+  /**
+     * @brief abort connection
+     * @note does NOT call onDisconnect callback!
+     *
+     * @return always returns ERR_ABRT
+     */
   int8_t abort();
   bool free();
 
