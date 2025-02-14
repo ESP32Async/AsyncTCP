@@ -153,7 +153,8 @@ static void _free_event(lwip_tcp_event_packet_t *evpkt) {
 
 // Global variables
 static SemaphoreHandle_t _async_queue_mutex = nullptr;
-static lwip_tcp_event_packet_t *_async_queue_head = nullptr, *_async_queue_tail = nullptr;
+static lwip_tcp_event_packet_t *_async_queue_head = nullptr;
+static lwip_tcp_event_packet_t **_async_queue_tail = &_async_queue_head;  // double indirection!
 static TaskHandle_t _async_service_task_handle = NULL;
 
 namespace {
@@ -184,14 +185,12 @@ static inline bool _init_async_event_queue() {
 }
 
 static inline bool _send_async_event(lwip_tcp_event_packet_t *e) {
+  assert(e != nullptr);
+  assert(_async_queue_tail != nullptr);
   queue_mutex_guard guard;
   if (guard) {
-    if (_async_queue_tail) {
-      _async_queue_tail->next = e;
-    } else {
-      _async_queue_head = e;
-    }
-    _async_queue_tail = e;
+    *_async_queue_tail = e;
+    _async_queue_tail = &e->next;
 #ifdef ASYNC_TCP_DEBUG
     uint32_t n;
     xTaskNotifyAndQuery(_async_service_task_handle, 1, eIncrement, &n);
@@ -204,14 +203,16 @@ static inline bool _send_async_event(lwip_tcp_event_packet_t *e) {
 }
 
 static inline bool _prepend_async_event(lwip_tcp_event_packet_t *e) {
+  assert(e != nullptr);
+  assert(_async_queue_tail != nullptr);
   queue_mutex_guard guard;
   if (guard) {
-    if (_async_queue_head) {
-      e->next = _async_queue_head;
-    } else {
-      _async_queue_tail = e;
+    e->next = _async_queue_head;
+    if (e->next == nullptr) {
+      _async_queue_tail = &e->next;
     }
     _async_queue_head = e;
+
 #ifdef ASYNC_TCP_DEBUG
     uint32_t n;
     xTaskNotifyAndQuery(_async_service_task_handle, 1, eIncrement, &n);
@@ -227,12 +228,12 @@ static inline lwip_tcp_event_packet_t *_get_async_event() {
   queue_mutex_guard guard;
   lwip_tcp_event_packet_t *e = nullptr;
   if (guard) {
-    e = _async_queue_head;
     if (_async_queue_head) {
-      _async_queue_head = _async_queue_head->next;
-    }
-    if (!_async_queue_head) {
-      _async_queue_tail = nullptr;
+      e = _async_queue_head;
+      if (_async_queue_tail == &(e->next)) {
+        _async_queue_tail = &_async_queue_head;
+      }
+      _async_queue_head = e->next;
     }
     DEBUG_PRINTF("GAA: 0x%08x -> 0x%08x 0x%08x", (intptr_t)e, (intptr_t)_async_queue_head, (intptr_t)_async_queue_tail);
   }
@@ -243,22 +244,21 @@ static bool _remove_events_for(AsyncClient *client) {
   queue_mutex_guard guard;
   if (guard) {
     auto count = 0U, total = 0U;
-    auto current = _async_queue_head;
-    auto prev = decltype(current){nullptr};
-    while (current != nullptr) {
+    auto event_ptr = &_async_queue_head;
+    while (*event_ptr != nullptr) {
       ++total;
-      if (current->client == client) {
+      auto *event = *event_ptr;
+      if (event->client == client) {
         ++count;
-        auto last_next = prev ? &prev->next : &_async_queue_head;
-        *last_next = current->next;
-        if (_async_queue_tail == current) {
-          _async_queue_tail = prev;
+        *event_ptr = event->next;
+        if (event->next == nullptr) {
+          _async_queue_tail = event_ptr;
         }
-        _free_event(current);
-        current = *last_next;
+        _free_event(event);
+        // do not advance event_ptr
       } else {
-        prev = current;
-        current = current->next;
+        // advance event_ptr
+        event_ptr = &(*event_ptr)->next;
       }
     }
     DEBUG_PRINTF("_REF: Removed %d/%d for 0x%08x", count, total, (intptr_t)client);
