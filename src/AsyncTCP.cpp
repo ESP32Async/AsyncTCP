@@ -249,8 +249,10 @@ static bool _remove_events_for(AsyncClient *client) {
 class AsyncClient_detail {
 public:
   static inline lwip_tcp_event_packet_t *invalidate_pcb(AsyncClient &client) {
+    auto end_event = client._end_event;
     client._pcb = nullptr;
-    return client._end_event;
+    client._end_event = nullptr;
+    return end_event;
   };
   static void __attribute__((visibility("internal"))) handle_async_event(lwip_tcp_event_packet_t *event);
 };
@@ -290,7 +292,6 @@ void AsyncClient_detail::handle_async_event(lwip_tcp_event_packet_t *e) {
     if (e->client) {
       e->client->_error(e->error.err);
     }
-    return;                               // do not free this event, it belongs to the client
   } else if (e->event == LWIP_TCP_DNS) {  // client has no PCB allocated yet
     DEBUG_PRINTF("-D: 0x%08x %s = %s", e->client, e->dns.name, ipaddr_ntoa(&e->dns.addr));
     e->client->_dns_found(&e->dns.addr);
@@ -465,10 +466,13 @@ static void _tcp_error(void *arg, int8_t err) {
   // The associated pcb is now invalid and will soon be deallocated
   // We call on the preallocated end event from the client object
   lwip_tcp_event_packet_t *e = AsyncClient_detail::invalidate_pcb(*client);
-  assert(e);
-  e->error.err = err;
-  _remove_events_for(client);  // FUTURE: we could hold the lock the whole time
-  _prepend_async_event(e);
+  if (e) {
+    e->error.err = err;
+    _remove_events_for(client);  // FUTURE: we could hold the lock the whole time
+    _prepend_async_event(e);
+  } else {
+    log_e("tcp_error call for client %X with no end event", (intptr_t)client);
+  }
 }
 
 static void _tcp_dns_found(const char *name, struct ip_addr *ipaddr, void *arg) {
