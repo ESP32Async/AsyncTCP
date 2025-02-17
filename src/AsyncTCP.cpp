@@ -1052,10 +1052,15 @@ void AsyncClient::_error(int8_t err) {
     TCP_MUTEX_LOCK();
     tcp_arg(_pcb, NULL);
     if (_pcb->state == LISTEN) {
-      tcp_sent(_pcb, NULL);
-      tcp_recv(_pcb, NULL);
-      tcp_err(_pcb, NULL);
-      tcp_poll(_pcb, NULL, 0);
+      // tcp_sent(_pcb, NULL);
+      _pcb->sent = NULL;
+      // tcp_recv(_pcb, NULL);
+      _pcb->recv = NULL;
+      // tcp_err(_pcb, NULL);
+      _pcb->errf = NULL;
+      // tcp_poll(_pcb, NULL, 0);
+      _pcb->poll = NULL;
+      _pcb->pollinterval = 0;
     }
     TCP_MUTEX_UNLOCK();
     _free_closed_slot();
