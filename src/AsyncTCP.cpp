@@ -354,6 +354,7 @@ static int8_t _tcp_clear_events(void *arg) {
   e->arg = arg;
   if (!_prepend_async_event(&e)) {
     free((void *)(e));
+    log_e("Failed to queue event: LWIP_TCP_CLEAR");
     return ERR_TIMEOUT;
   }
   return ERR_OK;
@@ -372,6 +373,7 @@ static int8_t _tcp_connected(void *arg, tcp_pcb *pcb, int8_t err) {
   e->connected.err = err;
   if (!_prepend_async_event(&e)) {
     free((void *)(e));
+    log_e("Failed to queue event: LWIP_TCP_CONNECTED");
     return ERR_TIMEOUT;
   }
   return ERR_OK;
@@ -397,6 +399,7 @@ static int8_t _tcp_poll(void *arg, struct tcp_pcb *pcb) {
   // poll events are not critical 'cause those are repetitive, so we may not wait the queue in any case
   if (!_send_async_event(&e, 0)) {
     free((void *)(e));
+    log_e("Failed to queue event: LWIP_TCP_POLL");
     return ERR_TIMEOUT;
   }
   return ERR_OK;
@@ -425,6 +428,7 @@ static int8_t _tcp_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *pb, int8_t 
   }
   if (!_send_async_event(&e)) {
     free((void *)(e));
+    log_e("Failed to queue event: LWIP_TCP_RECV or LWIP_TCP_FIN");
     return ERR_TIMEOUT;
   }
   return ERR_OK;
@@ -443,6 +447,7 @@ static int8_t _tcp_sent(void *arg, struct tcp_pcb *pcb, uint16_t len) {
   e->sent.len = len;
   if (!_send_async_event(&e)) {
     free((void *)(e));
+    log_e("Failed to queue event: LWIP_TCP_SENT");
     return ERR_TIMEOUT;
   }
   return ERR_OK;
@@ -460,6 +465,7 @@ static void _tcp_error(void *arg, int8_t err) {
   e->error.err = err;
   if (!_send_async_event(&e)) {
     free((void *)(e));
+    log_e("Failed to queue event: LWIP_TCP_ERROR");
   }
 }
 
@@ -480,6 +486,7 @@ static void _tcp_dns_found(const char *name, struct ip_addr *ipaddr, void *arg) 
   }
   if (!_send_async_event(&e)) {
     free((void *)(e));
+    log_e("Failed to queue event: LWIP_TCP_DNS");
   }
 }
 
@@ -495,6 +502,7 @@ static int8_t _tcp_accept(void *arg, AsyncClient *client) {
   e->accept.client = client;
   if (!_prepend_async_event(&e)) {
     free((void *)(e));
+    log_e("Failed to queue event: LWIP_TCP_ACCEPT");
     return ERR_TIMEOUT;
   }
   return ERR_OK;
@@ -536,6 +544,8 @@ static err_t _tcp_output_api(struct tcpip_api_call_data *api_call_msg) {
   msg->err = ERR_CONN;
   if (msg->closed_slot == INVALID_CLOSED_SLOT || !_closed_slots[msg->closed_slot]) {
     msg->err = tcp_output(msg->pcb);
+  } else {
+    log_e("pcb was closed before reaching LwIP task");
   }
   return msg->err;
 }
@@ -556,6 +566,8 @@ static err_t _tcp_write_api(struct tcpip_api_call_data *api_call_msg) {
   msg->err = ERR_CONN;
   if (msg->closed_slot == INVALID_CLOSED_SLOT || !_closed_slots[msg->closed_slot]) {
     msg->err = tcp_write(msg->pcb, msg->write.data, msg->write.size, msg->write.apiflags);
+  } else {
+    log_e("pcb was closed before reaching LwIP task");
   }
   return msg->err;
 }
@@ -582,6 +594,8 @@ static err_t _tcp_recved_api(struct tcpip_api_call_data *api_call_msg) {
     // if(msg->closed_slot != INVALID_CLOSED_SLOT) {
     msg->err = 0;
     tcp_recved(msg->pcb, msg->received);
+  } else {
+    log_e("pcb was closed before reaching LwIP task");
   }
   return msg->err;
 }
@@ -603,6 +617,8 @@ static err_t _tcp_close_api(struct tcpip_api_call_data *api_call_msg) {
   msg->err = ERR_CONN;
   if (msg->closed_slot == INVALID_CLOSED_SLOT || !_closed_slots[msg->closed_slot]) {
     msg->err = tcp_close(msg->pcb);
+  } else {
+    log_e("pcb was closed before reaching LwIP task");
   }
   return msg->err;
 }
@@ -623,6 +639,8 @@ static err_t _tcp_abort_api(struct tcpip_api_call_data *api_call_msg) {
   msg->err = ERR_CONN;
   if (msg->closed_slot == INVALID_CLOSED_SLOT || !_closed_slots[msg->closed_slot]) {
     tcp_abort(msg->pcb);
+  } else {
+    log_e("pcb was closed before reaching LwIP task");
   }
   return msg->err;
 }
