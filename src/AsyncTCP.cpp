@@ -230,17 +230,29 @@ static inline lwip_tcp_event_packet_t *_get_async_event() {
 static bool _remove_events_for(AsyncClient *client) {
   queue_mutex_guard guard;
   if (guard) {
-    auto removed_events = _async_queue.remove_if([=](lwip_tcp_event_packet_t &pkt) {
+#ifdef ASYNC_TCP_DEBUG
+    auto start_length = _async_queue.size();
+#endif
+
+    auto removed_event_chain = _async_queue.remove_if([=](lwip_tcp_event_packet_t &pkt) {
       return pkt.client == client;
     });
+
     size_t count = 0;
-    while (removed_events) {
+    while (removed_event_chain) {
       ++count;
-      auto t = removed_events;
-      removed_events = removed_events->next;
+      auto t = removed_event_chain;
+      removed_event_chain = t->next;
       _free_event(t);
     }
-    DEBUG_PRINTF("Removed %d for 0x%08x", count, (intptr_t)client);
+
+#ifdef ASYNC_TCP_DEBUG
+    auto end_length = _async_queue.size();
+    assert(count + end_length == start_length);
+    assert(_async_queue.validate_tail());
+
+    DEBUG_PRINTF("Removed %d/%d for 0x%08x", count, start_length, (intptr_t)client);
+#endif
   };
   return (bool)guard;
 };
