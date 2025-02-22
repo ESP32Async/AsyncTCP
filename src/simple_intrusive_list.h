@@ -1,5 +1,7 @@
 // Simple intrusive list class
 
+#pragma once
+
 template<typename T> class simple_intrusive_list {
   static_assert(std::is_same<decltype(std::declval<T>().next), T *>::value, "Template type must have public 'T* next' member");
 
