@@ -108,6 +108,17 @@ public:
     return _head;
   }
 
+  bool validate_tail() const {
+    if (_head == nullptr) {
+      return (_tail == &_head);
+    }
+    auto p = _head;
+    while (p->next != nullptr) {
+      p = p->next;
+    }
+    return _tail == &p->next;
+  }
+
 private:
   // Data members
   value_ptr_type _head;
