@@ -3,13 +3,13 @@
 template<typename T> class simple_intrusive_list {
   static_assert(std::is_same<decltype(std::declval<T>().next), T *>::value, "Template type must have public 'T* next' member");
 
-private:
-  T *_head;
-  T **_tail;
-
 public:
+  typedef T value_type;
+  typedef value_type *value_ptr_type;
+  typedef value_ptr_type *value_ptr_ptr_type;
+
   // Static utility methods
-  static size_t list_size(T *chain) {
+  static size_t list_size(value_ptr_type chain) {
     size_t count = 0;
     for (auto c = chain; c != nullptr; c = c->next) {
       ++count;
@@ -17,7 +17,7 @@ public:
     return count;
   }
 
-  static void delete_list(T *chain) {
+  static void delete_list(value_ptr_type chain) {
     while (chain) {
       auto t = chain;
       chain = chain->next;
@@ -39,14 +39,14 @@ public:
   simple_intrusive_list<T> &operator=(const simple_intrusive_list<T> &) = delete;
   simple_intrusive_list<T> &operator=(simple_intrusive_list<T> &&) = delete;
 
-  void push_back(T *obj) {
+  inline void push_back(value_ptr_type obj) {
     if (obj) {
       *_tail = obj;
       _tail = &obj->next;
     }
   }
 
-  void push_front(T *obj) {
+  inline void push_front(value_ptr_type obj) {
     if (obj) {
       if (_head == nullptr) {
         _tail = &obj->next;
@@ -56,7 +56,7 @@ public:
     }
   }
 
-  T *pop_front() {
+  inline value_ptr_type pop_front() {
     auto rv = _head;
     if (_head) {
       if (_tail == &_head->next) {
@@ -67,27 +67,30 @@ public:
     return rv;
   }
 
-  void clear() {
+  inline void clear() {
     // Assumes all elements were allocated with "new"
     delete_list(_head);
     _head = nullptr;
     _tail = &_head;
   }
 
-  size_t size() const {
+  inline size_t size() const {
     return list_size(_head);
   }
 
-  T *remove_if(const std::function<bool(T &)> &condition) {
-    T *removed = nullptr;
-    auto **current_ptr = &_head;
+  template<typename function_type> inline value_ptr_type remove_if(const function_type &condition) {
+    value_ptr_type removed = nullptr;
+    value_ptr_ptr_type current_ptr = &_head;
     while (*current_ptr != nullptr) {
-      auto *current = *current_ptr;
+      value_ptr_type current = *current_ptr;
       if (condition(*current)) {
+        // Remove this item from the list by moving the next item in
         *current_ptr = current->next;
+        // If we were the last item, reset tail
         if (current->next == nullptr) {
           _tail = current_ptr;
         }
+        // Prepend this item to the removed list
         current->next = removed;
         removed = current;
         // do not advance current_ptr
@@ -97,10 +100,17 @@ public:
       }
     }
 
+    // Return the removed entries
     return removed;
   }
 
-  T *begin() const {
+  inline value_ptr_type begin() const {
     return _head;
   }
+
+private:
+  // Data members
+  value_ptr_type _head;
+  value_ptr_ptr_type _tail;
+
 };  // class simple_intrusive_list
