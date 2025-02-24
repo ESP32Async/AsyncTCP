@@ -99,6 +99,10 @@ struct lwip_tcp_event_packet_t {
       int8_t err;
     } error;
     struct {
+      uint16_t len;
+    } sent;
+    struct {
+      pbuf *pb;
       int8_t err;
     } recv;
     struct {
@@ -118,6 +122,7 @@ struct lwip_tcp_event_packet_t {
 class AsyncClient_detail {
 public:
   static inline lwip_tcp_event_packet_t *invalidate_pcb(AsyncClient &client);
+  static inline lwip_tcp_event_packet_t *get_async_event();
   static void __attribute__((visibility("internal"))) handle_async_event(lwip_tcp_event_packet_t *event);
 
   // TCP event callbacks
@@ -159,6 +164,9 @@ static lwip_tcp_event_packet_t *_alloc_event(lwip_tcp_event_t event, AsyncClient
 
 static void _free_event(lwip_tcp_event_packet_t *evpkt) {
   DEBUG_PRINTF("_FE: 0x%08x -> %d 0x%08x [0x%08x]", (intptr_t)evpkt, (int)evpkt->event, (intptr_t)evpkt->client, (intptr_t)evpkt->next);
+  if ((evpkt->event == LWIP_TCP_RECV) && (evpkt->recv.pb != nullptr)) {
+    pbuf_free(evpkt->recv.pb);
+  }
   delete evpkt;
 }
 
@@ -219,16 +227,6 @@ static inline void _prepend_async_event(lwip_tcp_event_packet_t *e) {
 #endif
 }
 
-static inline lwip_tcp_event_packet_t *_get_async_event() {
-  queue_mutex_guard guard;
-  lwip_tcp_event_packet_t *e = nullptr;
-  if (guard) {
-    e = _async_queue.pop_front();
-  }
-  DEBUG_PRINTF("0x%08x", (intptr_t)e);
-  return e;
-}
-
 static void _remove_events_for(AsyncClient *client) {
 #ifdef ASYNC_TCP_DEBUG
   auto start_length = _async_queue.size();
@@ -286,6 +284,33 @@ inline lwip_tcp_event_packet_t *AsyncClient_detail::invalidate_pcb(AsyncClient &
   return end_event;
 };
 
+inline lwip_tcp_event_packet_t *AsyncClient_detail::get_async_event() {
+  queue_mutex_guard guard;
+  lwip_tcp_event_packet_t *e = nullptr;
+  if (guard) {
+    e = _async_queue.pop_front();
+    // special case: override values
+    if (e) {
+      switch (e->event) {
+        case LWIP_TCP_RECV:
+          if ((e->recv.err == 0) && (e->recv.pb == nullptr)) {
+            e->recv.pb = e->client->_recv_pending;
+            e->client->_recv_pending = nullptr;
+          }
+          break;
+        case LWIP_TCP_SENT:
+          e->sent.len = e->client->_sent_pending;
+          e->client->_sent_pending = 0;
+          break;
+        case LWIP_TCP_POLL: e->client->_polls_pending = 0; break;
+        default:            break;
+      }
+    }
+  }
+  DEBUG_PRINTF("0x%08x", (intptr_t)e);
+  return e;
+}
+
 void AsyncClient_detail::handle_async_event(lwip_tcp_event_packet_t *e) {
   // Special cases first
   if (e->event == LWIP_TCP_ERROR) {
@@ -313,31 +338,17 @@ void AsyncClient_detail::handle_async_event(lwip_tcp_event_packet_t *e) {
   // TODO: is a switch-case more code efficient?
   else if (e->event == LWIP_TCP_RECV) {
     DEBUG_PRINTF("-R: 0x%08x", e->client->_pcb);
-    struct pbuf *pb;
-    {
-      queue_mutex_guard guard;
-      pb = e->client->_recv_pending;
-      e->client->_recv_pending = nullptr;
-    }
-    e->client->_recv(pb, e->recv.err);
+    e->client->_recv(e->recv.pb, e->recv.err);
+    e->recv.pb = nullptr; // Consumed by client
   } else if (e->event == LWIP_TCP_FIN) {
     DEBUG_PRINTF("-F: 0x%08x", e->client->_pcb);
     e->client->_fin(e->fin.err);
   } else if (e->event == LWIP_TCP_SENT) {
     DEBUG_PRINTF("-S: 0x%08x", e->client->_pcb);
-    uint16_t sent;
-    {
-      queue_mutex_guard guard;
-      sent = e->client->_sent_pending;
-      e->client->_sent_pending = 0;
-    }
-    e->client->_sent(sent);
+    e->client->_sent(e->sent.len);
   } else if (e->event == LWIP_TCP_POLL) {
     DEBUG_PRINTF("-P: 0x%08x", e->client->_pcb);
     e->client->_poll();
-    // Clear poll pending
-    queue_mutex_guard guard;
-    e->client->_polls_pending = 0;
   } else if (e->event == LWIP_TCP_CONNECTED) {
     DEBUG_PRINTF("-C: 0x%08x 0x%08x %d", e->client, e->client->_pcb, e->connected.err);
     e->client->_connected(e->connected.err);
@@ -355,7 +366,7 @@ static void _async_service_task(void *pvParameters) {
   }
 #endif
   for (;;) {
-    while (auto packet = _get_async_event()) {
+    while (auto packet = AsyncClient_detail::get_async_event()) {
       AsyncClient_detail::handle_async_event(packet);
 #if CONFIG_ASYNC_TCP_USE_WDT
       esp_task_wdt_reset();
@@ -437,12 +448,10 @@ int8_t AsyncClient_detail::tcp_poll(void *arg, struct tcp_pcb *pcb) {
   AsyncClient *client = reinterpret_cast<AsyncClient *>(arg);
 
   // Coalesce event, if possible
-  {
-    queue_mutex_guard guard;
-    if (client->_polls_pending) {
-      ++client->_polls_pending;
-      return ERR_OK;
-    }
+  queue_mutex_guard guard;
+  if (client->_polls_pending) {
+    ++client->_polls_pending;
+    return ERR_OK;
   }
 
   lwip_tcp_event_packet_t *e = _alloc_event(LWIP_TCP_POLL, client, pcb);
@@ -450,7 +459,7 @@ int8_t AsyncClient_detail::tcp_poll(void *arg, struct tcp_pcb *pcb) {
     return ERR_MEM;
   }
 
-  queue_mutex_guard guard;
+  assert(client->_polls_pending == 0);
   _send_async_event(e);
   return ERR_OK;
 }
@@ -458,31 +467,43 @@ int8_t AsyncClient_detail::tcp_poll(void *arg, struct tcp_pcb *pcb) {
 int8_t AsyncClient_detail::tcp_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *pb, int8_t err) {
   AsyncClient *client = reinterpret_cast<AsyncClient *>(arg);
 
-  // Coalesce event, if possible
-  if (pb) {
-    queue_mutex_guard guard;
-    if (client->_recv_pending) {
-      pbuf_cat(client->_recv_pending, pb);
-      return ERR_OK;
-    }
-  }
-
-  lwip_tcp_event_packet_t *e = _alloc_event(LWIP_TCP_RECV, client, pcb);
-  if (e == nullptr) {
-    return ERR_MEM;
-  }
-
   if (pb) {
     DEBUG_PRINTF("+R: 0x%08x", pcb);
+    queue_mutex_guard guard;
+
+    // Coalesce event, if possible
+    if (err == 0) {
+      if (client->_recv_pending) {
+        pbuf_cat(client->_recv_pending, pb);
+        return ERR_OK;
+      }
+    }
+
+    lwip_tcp_event_packet_t *e = _alloc_event(LWIP_TCP_RECV, client, pcb);
+    if (e == nullptr) {
+      pbuf_free(pb);
+      return ERR_MEM;  // TODO - error handling???
+    }
+
+    if (err == 0) {
+      client->_recv_pending = pb;
+      e->recv.pb = nullptr;
+    } else {
+      e->recv.pb = pb;
+    }
     e->recv.err = err;
+    _send_async_event(e);
   } else {
     DEBUG_PRINTF("+F: 0x%08x -> 0x%08x", pcb, arg);
-    e->event = LWIP_TCP_FIN;
-    e->fin.err = err;
-  }
+    queue_mutex_guard guard;
+    lwip_tcp_event_packet_t *e = _alloc_event(LWIP_TCP_FIN, client, pcb);
+    if (e == nullptr) {
+      return ERR_MEM;
+    }
 
-  queue_mutex_guard guard;
-  _send_async_event(e);
+    e->fin.err = err;
+    _send_async_event(e);
+  }
 
   return ERR_OK;
 }
@@ -492,12 +513,10 @@ int8_t AsyncClient_detail::tcp_sent(void *arg, struct tcp_pcb *pcb, uint16_t len
   AsyncClient *client = reinterpret_cast<AsyncClient *>(arg);
 
   // Coalesce event, if possible
-  {
-    queue_mutex_guard guard;
-    if (client->_sent_pending) {
-      client->_sent_pending += len;
-      return ERR_OK;
-    }
+  queue_mutex_guard guard;
+  if (client->_sent_pending) {
+    client->_sent_pending += len;
+    return ERR_OK;
   }
 
   lwip_tcp_event_packet_t *e = _alloc_event(LWIP_TCP_SENT, client, pcb);
@@ -505,7 +524,8 @@ int8_t AsyncClient_detail::tcp_sent(void *arg, struct tcp_pcb *pcb, uint16_t len
     return ERR_MEM;
   }
 
-  queue_mutex_guard guard;
+  assert(client->_sent_pending == 0);
+  client->_sent_pending = len;
   _send_async_event(e);
   return ERR_OK;
 }
