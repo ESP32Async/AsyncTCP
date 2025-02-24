@@ -249,6 +249,7 @@ public:
 protected:
   tcp_pcb *_pcb;
   lwip_tcp_event_packet_t *_end_event;
+  bool _needs_discard;
 
   AcConnectHandler _connect_cb;
   void *_connect_cb_arg;

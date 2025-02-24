@@ -285,15 +285,11 @@ static lwip_tcp_event_packet_t *_register_pcb(tcp_pcb *pcb, AsyncClient *client)
 static void _teardown_pcb(tcp_pcb *pcb) {
   assert(pcb);
   // Do teardown
-  auto old_arg = pcb->callback_arg;
   tcp_arg(pcb, NULL);
   tcp_sent(pcb, NULL);
   tcp_recv(pcb, NULL);
   tcp_err(pcb, NULL);
   tcp_poll(pcb, NULL, 0);
-  if (old_arg) {
-    _remove_events_for(reinterpret_cast<AsyncClient *>(old_arg));
-  }
 }
 
 void AsyncClient_detail::handle_async_event(lwip_tcp_event_packet_t *e) {
@@ -472,7 +468,7 @@ static int8_t _tcp_sent(void *arg, struct tcp_pcb *pcb, uint16_t len) {
 }
 
 static void _tcp_error(void *arg, int8_t err) {
-  DEBUG_PRINTF("+E: 0x%08x", arg);
+  DEBUG_PRINTF("+E: 0x%08x %d", arg, err);
   AsyncClient *client = reinterpret_cast<AsyncClient *>(arg);
   assert(client);
   // The associated pcb is now invalid and will soon be deallocated
@@ -539,6 +535,7 @@ typedef struct {
       ip_addr_t *addr;
       uint16_t port;
     } bind;
+    AsyncClient *client;  // used for close() and abort()
     uint8_t backlog;
   };
 } tcp_api_call_t;
@@ -585,29 +582,37 @@ static err_t _tcp_recved_api(struct tcpip_api_call_data *api_call_msg) {
 static err_t _tcp_close_api(struct tcpip_api_call_data *api_call_msg) {
   tcp_api_call_t *msg = (tcp_api_call_t *)api_call_msg;
   msg->err = ERR_CONN;
+  if (msg->client) {
+    // Client has requested close; purge all events from queue
+    _remove_events_for(msg->client);
+  }
   if (pcb_is_active(*msg)) {
     _teardown_pcb(*msg->pcb_ptr);
     msg->err = tcp_close(*msg->pcb_ptr);
-    if (msg->err == ERR_OK) {
-      *msg->pcb_ptr = nullptr;
+    if (msg->err != ERR_OK) {
+      tcp_abort(*msg->pcb_ptr);
     }
+    *msg->pcb_ptr = nullptr;
   }
   return msg->err;
 }
 
-static esp_err_t _tcp_close(tcp_pcb **pcb_ptr) {
+static esp_err_t _tcp_close(tcp_pcb **pcb_ptr, AsyncClient *client) {
   if (!pcb_ptr || !*pcb_ptr) {
     return ERR_CONN;
   }
   tcp_api_call_t msg;
   msg.pcb_ptr = pcb_ptr;
+  msg.client = client;
   tcpip_api_call(_tcp_close_api, (struct tcpip_api_call_data *)&msg);
   return msg.err;
 }
 
+// Sets *pcb_ptr to nullptr
 static err_t _tcp_abort_api(struct tcpip_api_call_data *api_call_msg) {
   tcp_api_call_t *msg = (tcp_api_call_t *)api_call_msg;
   msg->err = ERR_CONN;
+  _remove_events_for(msg->client);
   if (pcb_is_active(*msg)) {
     _teardown_pcb(*msg->pcb_ptr);
     tcp_abort(*msg->pcb_ptr);
@@ -616,12 +621,13 @@ static err_t _tcp_abort_api(struct tcpip_api_call_data *api_call_msg) {
   return msg->err;
 }
 
-static esp_err_t _tcp_abort(tcp_pcb **pcb_ptr) {
+static esp_err_t _tcp_abort(tcp_pcb **pcb_ptr, AsyncClient *client) {
   if (!pcb_ptr || !*pcb_ptr) {
     return ERR_CONN;
   }
   tcp_api_call_t msg;
   msg.pcb_ptr = pcb_ptr;
+  msg.client = client;
   tcpip_api_call(_tcp_abort_api, (struct tcpip_api_call_data *)&msg);
   assert(*pcb_ptr == nullptr);  // must be true
   return msg.err;
@@ -674,9 +680,9 @@ static tcp_pcb *_tcp_listen_with_backlog(tcp_pcb *pcb, uint8_t backlog) {
  */
 
 AsyncClient::AsyncClient(tcp_pcb *pcb)
-  : _pcb(pcb), _end_event(nullptr), _connect_cb(0), _connect_cb_arg(0), _discard_cb(0), _discard_cb_arg(0), _sent_cb(0), _sent_cb_arg(0), _error_cb(0),
-    _error_cb_arg(0), _recv_cb(0), _recv_cb_arg(0), _pb_cb(0), _pb_cb_arg(0), _timeout_cb(0), _timeout_cb_arg(0), _ack_pcb(true), _tx_last_packet(0),
-    _rx_timeout(0), _rx_last_ack(0), _ack_timeout(CONFIG_ASYNC_TCP_MAX_ACK_TIME), _connect_port(0) {
+  : _pcb(pcb), _end_event(nullptr), _needs_discard(pcb != nullptr), _connect_cb(0), _connect_cb_arg(0), _discard_cb(0), _discard_cb_arg(0), _sent_cb(0),
+    _sent_cb_arg(0), _error_cb(0), _error_cb_arg(0), _recv_cb(0), _recv_cb_arg(0), _pb_cb(0), _pb_cb_arg(0), _timeout_cb(0), _timeout_cb_arg(0), _ack_pcb(true),
+    _tx_last_packet(0), _rx_timeout(0), _rx_last_ack(0), _ack_timeout(CONFIG_ASYNC_TCP_MAX_ACK_TIME), _connect_port(0) {
   if (_pcb) {
     _end_event = _register_pcb(_pcb, this);
     _rx_last_packet = millis();
@@ -686,19 +692,23 @@ AsyncClient::AsyncClient(tcp_pcb *pcb)
       // Swallow this PCB, producing a null client object
       tcp_abort(_pcb);
       _pcb = nullptr;
+      _needs_discard = false;
     }
   }
-  DEBUG_PRINTF("+AC: 0x%08x -> 0x%08x", _pcb, (intptr_t)this);
+  DEBUG_PRINTF("+AC: 0x%08x -> 0x%08x [0x%08x]", _pcb, (intptr_t)this, (intptr_t)_end_event);
 }
 
 AsyncClient::~AsyncClient() {
+  DEBUG_PRINTF("-AC: 0x%08x -> 0x%08x [0x%08x]", _pcb, (intptr_t)this, (intptr_t)_end_event);
   if (_pcb) {
     _close();
   }
   if (_end_event) {
     _free_event(_end_event);
   }
-  DEBUG_PRINTF("-AC: 0x%08x -> 0x%08x", _pcb, (intptr_t)this);
+  assert(_needs_discard == false);  // If we needed the discard callback, it must have been called by now
+                                    // We take care to clear this flag before calling the discard callback
+                                    // as the discard callback commonly destructs the AsyncClient object.
 }
 
 /*
@@ -774,6 +784,7 @@ bool AsyncClient::_connect(const ip_addr_t &addr, uint16_t port) {
     _pcb = nullptr;
     return false;
   }
+  _needs_discard = true;
   TCP_MUTEX_UNLOCK();
 
   tcp_api_call_t msg;
@@ -847,7 +858,8 @@ void AsyncClient::close(bool now) {
 
 int8_t AsyncClient::abort() {
   if (_pcb) {
-    _tcp_abort(&_pcb);
+    _tcp_abort(&_pcb, this);
+    _needs_discard = false;
   }
   return ERR_ABRT;
 }
@@ -920,17 +932,13 @@ void AsyncClient::ackPacket(struct pbuf *pb) {
  * */
 
 int8_t AsyncClient::_close() {
-  DEBUG_PRINTF("close: 0x%08x", (uint32_t)this);
-  int8_t err = ERR_OK;
-  if (_pcb) {
-    // log_i("");
-    err = _tcp_close(&_pcb);
-    if (err != ERR_OK) {
-      err = abort();
-    }
-    if (_discard_cb) {
-      _discard_cb(_discard_cb_arg, this);
-    }
+  DEBUG_PRINTF("close: 0x%08x -> 0x%08x, %d", (uint32_t)this, _pcb, _needs_discard);
+  // We always call close, regardless of current state
+  int8_t err = _tcp_close(&_pcb, this);
+  auto call_discard = _needs_discard;
+  _needs_discard = false;
+  if (call_discard && _discard_cb) {
+    _discard_cb(_discard_cb_arg, this);
   }
   return err;
 }
@@ -948,9 +956,11 @@ int8_t AsyncClient::_connected(int8_t err) {
 }
 
 void AsyncClient::_error(int8_t err) {
+  assert(_needs_discard);
   if (_error_cb) {
     _error_cb(_error_cb_arg, this, err);
   }
+  _needs_discard = false;
   if (_discard_cb) {
     _discard_cb(_discard_cb_arg, this);
   }
@@ -1041,12 +1051,8 @@ void AsyncClient::_dns_found(struct ip_addr *ipaddr) {
     connect(ip, _connect_port);
 #endif
   } else {
-    if (_error_cb) {
-      _error_cb(_error_cb_arg, this, -55);
-    }
-    if (_discard_cb) {
-      _discard_cb(_discard_cb_arg, this);
-    }
+    // No address found
+    this->_error(-55);
   }
 }
 
@@ -1416,7 +1422,7 @@ void AsyncServer::begin() {
   err = _tcp_bind(_pcb, &local_addr, _port);
 
   if (err != ERR_OK) {
-    _tcp_close(&_pcb);
+    _tcp_close(&_pcb, nullptr);
     log_e("bind error: %d", err);
     return;
   }
@@ -1439,7 +1445,7 @@ void AsyncServer::end() {
     tcp_arg(_pcb, NULL);
     tcp_accept(_pcb, NULL);
     if (tcp_close(_pcb) != ERR_OK) {
-      _tcp_abort(&_pcb);
+      tcp_abort(_pcb);
     }
     _pcb = NULL;
     TCP_MUTEX_UNLOCK();
