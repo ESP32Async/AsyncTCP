@@ -12,6 +12,8 @@ extern "C" {
 #include "lwip/inet.h"
 #include "lwip/opt.h"
 #include "lwip/tcp.h"
+#include "lwip/tcpip.h"
+#include "lwip/sys.h"
 }
 
 #if CONFIG_ASYNC_TCP_USE_WDT
@@ -30,20 +32,29 @@ extern "C" {
 #define TAG "AsyncTCP"
 
 // https://github.com/espressif/arduino-esp32/issues/10526
+namespace {
 #ifdef CONFIG_LWIP_TCPIP_CORE_LOCKING
-#define TCP_MUTEX_LOCK()                                \
-  if (!sys_thread_tcpip(LWIP_CORE_LOCK_QUERY_HOLDER)) { \
-    LOCK_TCPIP_CORE();                                  \
+struct tcp_core_guard {
+  bool do_lock;
+  inline tcp_core_guard() : do_lock(!sys_thread_tcpip(LWIP_CORE_LOCK_QUERY_HOLDER)) {
+    if (do_lock) {
+      LOCK_TCPIP_CORE();
+    }
   }
-
-#define TCP_MUTEX_UNLOCK()                             \
-  if (sys_thread_tcpip(LWIP_CORE_LOCK_QUERY_HOLDER)) { \
-    UNLOCK_TCPIP_CORE();                               \
+  inline ~tcp_core_guard() {
+    if (do_lock) {
+      UNLOCK_TCPIP_CORE();
+    }
   }
-#else  // CONFIG_LWIP_TCPIP_CORE_LOCKING
-#define TCP_MUTEX_LOCK()
-#define TCP_MUTEX_UNLOCK()
+  tcp_core_guard(const tcp_core_guard &) = delete;
+  tcp_core_guard(tcp_core_guard &&) = delete;
+  tcp_core_guard &operator=(const tcp_core_guard &) = delete;
+  tcp_core_guard &operator=(tcp_core_guard &&) = delete;
+};
+#else   // CONFIG_LWIP_TCPIP_CORE_LOCKING
+struct tcp_core_guard {};
 #endif  // CONFIG_LWIP_TCPIP_CORE_LOCKING
+}  // anonymous namespace
 
 /*
   TCP poll interval is specified in terms of the TCP coarse timer interval, which is called twice a second
@@ -685,6 +696,7 @@ AsyncClient::AsyncClient(tcp_pcb *pcb)
     _sent_cb_arg(0), _error_cb(0), _error_cb_arg(0), _recv_cb(0), _recv_cb_arg(0), _pb_cb(0), _pb_cb_arg(0), _timeout_cb(0), _timeout_cb_arg(0), _ack_pcb(true),
     _tx_last_packet(0), _rx_timeout(0), _rx_last_ack(0), _ack_timeout(CONFIG_ASYNC_TCP_MAX_ACK_TIME), _connect_port(0) {
   if (_pcb) {
+    tcp_core_guard tg;
     _end_event = _register_pcb(_pcb, this);
     _rx_last_packet = millis();
     if (!_end_event) {
@@ -770,23 +782,23 @@ bool AsyncClient::_connect(const ip_addr_t &addr, uint16_t port) {
     return false;
   }
 
-  TCP_MUTEX_LOCK();
-  _pcb = tcp_new_ip_type(addr.type);
-  if (!_pcb) {
-    TCP_MUTEX_UNLOCK();
-    log_e("pcb == NULL");
-    return false;
-  }
-  _end_event = _register_pcb(_pcb, this);
+  {
+    tcp_core_guard tg;
+    _pcb = tcp_new_ip_type(addr.type);
+    if (!_pcb) {
+      log_e("pcb == NULL");
+      return false;
+    }
+    _end_event = _register_pcb(_pcb, this);
 
-  if (!_end_event) {
-    log_e("Unable to allocate event");
-    tcp_abort(_pcb);
-    _pcb = nullptr;
-    return false;
+    if (!_end_event) {
+      log_e("Unable to allocate event");
+      tcp_abort(_pcb);
+      _pcb = nullptr;
+      return false;
+    }
+    _needs_discard = true;
   }
-  _needs_discard = true;
-  TCP_MUTEX_UNLOCK();
 
   tcp_api_call_t msg;
   msg.pcb_ptr = &_pcb;
@@ -826,9 +838,12 @@ bool AsyncClient::connect(const char *host, uint16_t port) {
     return false;
   }
 
-  TCP_MUTEX_LOCK();
-  err_t err = dns_gethostbyname(host, &addr, (dns_found_callback)&_tcp_dns_found, this);
-  TCP_MUTEX_UNLOCK();
+  err_t err;
+  {
+    tcp_core_guard tg;
+    err = dns_gethostbyname(host, &addr, (dns_found_callback)&_tcp_dns_found, this);
+  }
+
   if (err == ERR_OK) {
 #if ESP_IDF_VERSION_MAJOR < 5
 #if LWIP_IPV6
@@ -1400,9 +1415,10 @@ void AsyncServer::begin() {
     return;
   }
   int8_t err;
-  TCP_MUTEX_LOCK();
-  _pcb = tcp_new_ip_type(_bind4 && _bind6 ? IPADDR_TYPE_ANY : (_bind6 ? IPADDR_TYPE_V6 : IPADDR_TYPE_V4));
-  TCP_MUTEX_UNLOCK();
+  {
+    tcp_core_guard tg;
+    _pcb = tcp_new_ip_type(_bind4 && _bind6 ? IPADDR_TYPE_ANY : (_bind6 ? IPADDR_TYPE_V6 : IPADDR_TYPE_V4));
+  };
   if (!_pcb) {
     log_e("_pcb == NULL");
     return;
@@ -1434,22 +1450,20 @@ void AsyncServer::begin() {
     log_e("listen_pcb == NULL");
     return;
   }
-  TCP_MUTEX_LOCK();
+  tcp_core_guard tg;
   tcp_arg(_pcb, (void *)this);
   tcp_accept(_pcb, &_s_accept);
-  TCP_MUTEX_UNLOCK();
 }
 
 void AsyncServer::end() {
   if (_pcb) {
-    TCP_MUTEX_LOCK();
+    tcp_core_guard tg;
     tcp_arg(_pcb, NULL);
     tcp_accept(_pcb, NULL);
     if (tcp_close(_pcb) != ERR_OK) {
       tcp_abort(_pcb);
     }
     _pcb = NULL;
-    TCP_MUTEX_UNLOCK();
   }
 }
 
