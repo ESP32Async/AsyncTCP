@@ -257,18 +257,6 @@ static bool _remove_events_for(AsyncClient *client) {
   return (bool)guard;
 };
 
-// Detail class for interacting with AsyncClient internals, but without exposing the API to other parts of the program
-class AsyncClient_detail {
-public:
-  static inline lwip_tcp_event_packet_t *invalidate_pcb(AsyncClient &client) {
-    auto end_event = client._end_event;
-    client._pcb = nullptr;
-    client._end_event = nullptr;
-    return end_event;
-  };
-  static void __attribute__((visibility("internal"))) handle_async_event(lwip_tcp_event_packet_t *event);
-};
-
 static lwip_tcp_event_packet_t *_register_pcb(tcp_pcb *pcb, AsyncClient *client) {
   // do client-specific setup
   auto end_event = _alloc_event(LWIP_TCP_ERROR, client, pcb);
@@ -291,6 +279,19 @@ static void _teardown_pcb(tcp_pcb *pcb) {
   tcp_err(pcb, NULL);
   tcp_poll(pcb, NULL, 0);
 }
+
+// Detail class for interacting with AsyncClient internals, but without exposing the API to other parts of the program
+class AsyncClient_detail {
+public:
+  static inline lwip_tcp_event_packet_t *invalidate_pcb(AsyncClient &client) {
+    auto end_event = client._end_event;
+    _teardown_pcb(client._pcb);
+    client._pcb = nullptr;
+    client._end_event = nullptr;
+    return end_event;
+  };
+  static void __attribute__((visibility("internal"))) handle_async_event(lwip_tcp_event_packet_t *event);
+};
 
 void AsyncClient_detail::handle_async_event(lwip_tcp_event_packet_t *e) {
   // Special cases first
