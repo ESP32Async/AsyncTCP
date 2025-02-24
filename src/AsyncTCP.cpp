@@ -99,10 +99,6 @@ struct lwip_tcp_event_packet_t {
       int8_t err;
     } error;
     struct {
-      uint16_t len;
-    } sent;
-    struct {
-      pbuf *pb;
       int8_t err;
     } recv;
     struct {
@@ -163,10 +159,6 @@ static lwip_tcp_event_packet_t *_alloc_event(lwip_tcp_event_t event, AsyncClient
 
 static void _free_event(lwip_tcp_event_packet_t *evpkt) {
   DEBUG_PRINTF("_FE: 0x%08x -> %d 0x%08x [0x%08x]", (intptr_t)evpkt, (int)evpkt->event, (intptr_t)evpkt->client, (intptr_t)evpkt->next);
-  if ((evpkt->event == LWIP_TCP_RECV) && (evpkt->recv.pb != nullptr)) {
-    // We must free the packet buffer
-    pbuf_free(evpkt->recv.pb);
-  }
   delete evpkt;
 }
 
@@ -321,17 +313,31 @@ void AsyncClient_detail::handle_async_event(lwip_tcp_event_packet_t *e) {
   // TODO: is a switch-case more code efficient?
   else if (e->event == LWIP_TCP_RECV) {
     DEBUG_PRINTF("-R: 0x%08x", e->client->_pcb);
-    e->client->_recv(e->recv.pb, e->recv.err);
-    e->recv.pb = nullptr;  // client has taken responsibility for freeing it
+    struct pbuf *pb;
+    {
+      queue_mutex_guard guard;
+      pb = e->client->_recv_pending;
+      e->client->_recv_pending = nullptr;
+    }
+    e->client->_recv(pb, e->recv.err);
   } else if (e->event == LWIP_TCP_FIN) {
     DEBUG_PRINTF("-F: 0x%08x", e->client->_pcb);
     e->client->_fin(e->fin.err);
   } else if (e->event == LWIP_TCP_SENT) {
     DEBUG_PRINTF("-S: 0x%08x", e->client->_pcb);
-    e->client->_sent(e->sent.len);
+    uint16_t sent;
+    {
+      queue_mutex_guard guard;
+      sent = e->client->_sent_pending;
+      e->client->_sent_pending = 0;
+    }
+    e->client->_sent(sent);
   } else if (e->event == LWIP_TCP_POLL) {
     DEBUG_PRINTF("-P: 0x%08x", e->client->_pcb);
     e->client->_poll();
+    // Clear poll pending
+    queue_mutex_guard guard;
+    e->client->_polls_pending = 0;
   } else if (e->event == LWIP_TCP_CONNECTED) {
     DEBUG_PRINTF("-C: 0x%08x 0x%08x %d", e->client, e->client->_pcb, e->connected.err);
     e->client->_connected(e->connected.err);
@@ -429,6 +435,16 @@ static int8_t _tcp_connected(void *arg, tcp_pcb *pcb, int8_t err) {
 int8_t AsyncClient_detail::tcp_poll(void *arg, struct tcp_pcb *pcb) {
   DEBUG_PRINTF("+P: 0x%08x", pcb);
   AsyncClient *client = reinterpret_cast<AsyncClient *>(arg);
+
+  // Coalesce event, if possible
+  {
+    queue_mutex_guard guard;
+    if (client->_polls_pending) {
+      ++client->_polls_pending;
+      return ERR_OK;
+    }
+  }
+
   lwip_tcp_event_packet_t *e = _alloc_event(LWIP_TCP_POLL, client, pcb);
   if (e == nullptr) {
     return ERR_MEM;
@@ -441,6 +457,16 @@ int8_t AsyncClient_detail::tcp_poll(void *arg, struct tcp_pcb *pcb) {
 
 int8_t AsyncClient_detail::tcp_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *pb, int8_t err) {
   AsyncClient *client = reinterpret_cast<AsyncClient *>(arg);
+
+  // Coalesce event, if possible
+  if (pb) {
+    queue_mutex_guard guard;
+    if (client->_recv_pending) {
+      pbuf_cat(client->_recv_pending, pb);
+      return ERR_OK;
+    }
+  }
+
   lwip_tcp_event_packet_t *e = _alloc_event(LWIP_TCP_RECV, client, pcb);
   if (e == nullptr) {
     return ERR_MEM;
@@ -448,7 +474,6 @@ int8_t AsyncClient_detail::tcp_recv(void *arg, struct tcp_pcb *pcb, struct pbuf 
 
   if (pb) {
     DEBUG_PRINTF("+R: 0x%08x", pcb);
-    e->recv.pb = pb;
     e->recv.err = err;
   } else {
     DEBUG_PRINTF("+F: 0x%08x -> 0x%08x", pcb, arg);
@@ -465,6 +490,16 @@ int8_t AsyncClient_detail::tcp_recv(void *arg, struct tcp_pcb *pcb, struct pbuf 
 int8_t AsyncClient_detail::tcp_sent(void *arg, struct tcp_pcb *pcb, uint16_t len) {
   DEBUG_PRINTF("+S: 0x%08x", pcb);
   AsyncClient *client = reinterpret_cast<AsyncClient *>(arg);
+
+  // Coalesce event, if possible
+  {
+    queue_mutex_guard guard;
+    if (client->_sent_pending) {
+      client->_sent_pending += len;
+      return ERR_OK;
+    }
+  }
+
   lwip_tcp_event_packet_t *e = _alloc_event(LWIP_TCP_SENT, client, pcb);
   if (e == nullptr) {
     return ERR_MEM;
@@ -697,9 +732,10 @@ static tcp_pcb *_tcp_listen_with_backlog(tcp_pcb *pcb, uint8_t backlog) {
  */
 
 AsyncClient::AsyncClient(tcp_pcb *pcb)
-  : _pcb(pcb), _end_event(nullptr), _needs_discard(pcb != nullptr), _connect_cb(0), _connect_cb_arg(0), _discard_cb(0), _discard_cb_arg(0), _sent_cb(0),
-    _sent_cb_arg(0), _error_cb(0), _error_cb_arg(0), _recv_cb(0), _recv_cb_arg(0), _pb_cb(0), _pb_cb_arg(0), _timeout_cb(0), _timeout_cb_arg(0), _ack_pcb(true),
-    _tx_last_packet(0), _rx_timeout(0), _rx_last_ack(0), _ack_timeout(CONFIG_ASYNC_TCP_MAX_ACK_TIME), _connect_port(0) {
+  : _pcb(pcb), _end_event(nullptr), _needs_discard(pcb != nullptr), _polls_pending(0), _recv_pending(nullptr), _sent_pending(0), _connect_cb(0),
+    _connect_cb_arg(0), _discard_cb(0), _discard_cb_arg(0), _sent_cb(0), _sent_cb_arg(0), _error_cb(0), _error_cb_arg(0), _recv_cb(0), _recv_cb_arg(0),
+    _pb_cb(0), _pb_cb_arg(0), _timeout_cb(0), _timeout_cb_arg(0), _ack_pcb(true), _tx_last_packet(0), _rx_timeout(0), _rx_last_ack(0),
+    _ack_timeout(CONFIG_ASYNC_TCP_MAX_ACK_TIME), _connect_port(0) {
   if (_pcb) {
     tcp_core_guard tg;
     _end_event = _register_pcb(_pcb, this);
@@ -723,6 +759,9 @@ AsyncClient::~AsyncClient() {
   }
   if (_end_event) {
     _free_event(_end_event);
+  }
+  if (_recv_pending) {
+    pbuf_free(_recv_pending);
   }
   assert(_needs_discard == false);  // If we needed the discard callback, it must have been called by now
                                     // We take care to clear this flag before calling the discard callback

@@ -250,6 +250,9 @@ protected:
   tcp_pcb *_pcb;
   lwip_tcp_event_packet_t *_end_event;
   bool _needs_discard;
+  unsigned _polls_pending;
+  struct pbuf *_recv_pending;
+  uint16_t _sent_pending;
 
   AcConnectHandler _connect_cb;
   void *_connect_cb_arg;
