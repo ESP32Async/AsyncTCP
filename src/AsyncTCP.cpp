@@ -286,25 +286,22 @@ inline lwip_tcp_event_packet_t *AsyncClient_detail::invalidate_pcb(AsyncClient &
 
 inline lwip_tcp_event_packet_t *AsyncClient_detail::get_async_event() {
   queue_mutex_guard guard;
-  lwip_tcp_event_packet_t *e = nullptr;
-  if (guard) {
-    e = _async_queue.pop_front();
-    // special case: override values
-    if (e) {
-      switch (e->event) {
-        case LWIP_TCP_RECV:
-          if ((e->recv.err == 0) && (e->recv.pb == nullptr)) {
-            e->recv.pb = e->client->_recv_pending;
-            e->client->_recv_pending = nullptr;
-          }
-          break;
-        case LWIP_TCP_SENT:
-          e->sent.len = e->client->_sent_pending;
-          e->client->_sent_pending = 0;
-          break;
-        case LWIP_TCP_POLL: e->client->_polls_pending = 0; break;
-        default:            break;
-      }
+  lwip_tcp_event_packet_t *e  = _async_queue.pop_front();
+  // special case: override values
+  if (e) {
+    switch (e->event) {
+      case LWIP_TCP_RECV:
+        if ((e->recv.err == 0) && (e->recv.pb == nullptr)) {
+          e->recv.pb = e->client->_recv_pending;
+          e->client->_recv_pending = nullptr;
+        }
+        break;
+      case LWIP_TCP_SENT:
+        e->sent.len = e->client->_sent_pending;
+        e->client->_sent_pending = 0;
+        break;
+      case LWIP_TCP_POLL: e->client->_polls_pending = 0; break;
+      default:            break;
     }
   }
   DEBUG_PRINTF("0x%08x", (intptr_t)e);
