@@ -171,7 +171,6 @@ static void _free_event(lwip_tcp_event_packet_t *evpkt) {
 }
 
 // Global variables
-static SemaphoreHandle_t _async_queue_mutex = nullptr;
 static simple_intrusive_list<lwip_tcp_event_packet_t> _async_queue;
 static TaskHandle_t _async_service_task_handle = NULL;
 
@@ -180,13 +179,22 @@ namespace {
 typedef tcp_core_guard queue_mutex_guard;
 #else
 class queue_mutex_guard {
+
+  // Create-on-first-use idiom for an embedded mutex
+  static SemaphoreHandle_t _async_queue_mutex() {
+
+    static SemaphoreHandle_t mutex = xSemaphoreCreateMutex();
+    assert(mutex != nullptr);
+    return mutex;
+  };
+
   bool holds_mutex;
 
 public:
-  inline queue_mutex_guard() : holds_mutex(xSemaphoreTake(_async_queue_mutex, portMAX_DELAY)){};
+  inline queue_mutex_guard() : holds_mutex(xSemaphoreTake(_async_queue_mutex(), portMAX_DELAY)){};
   inline ~queue_mutex_guard() {
     if (holds_mutex) {
-      xSemaphoreGive(_async_queue_mutex);
+      xSemaphoreGive(_async_queue_mutex());
     }
   };
   inline explicit operator bool() const {
@@ -197,12 +205,6 @@ public:
 }  // namespace
 
 static inline bool _init_async_event_queue() {
-  if (!_async_queue_mutex) {
-    _async_queue_mutex = xSemaphoreCreateMutex();
-    if (!_async_queue_mutex) {
-      return false;
-    }
-  }
   return true;
 }
 
