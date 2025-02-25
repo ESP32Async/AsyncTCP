@@ -176,6 +176,9 @@ static simple_intrusive_list<lwip_tcp_event_packet_t> _async_queue;
 static TaskHandle_t _async_service_task_handle = NULL;
 
 namespace {
+#if defined(CONFIG_LWIP_TCPIP_CORE_LOCKING) && defined(CONFIG_ASYNC_TCP_QUEUE_LWIP_LOCK)
+typedef tcp_core_guard queue_mutex_guard;
+#else
 class queue_mutex_guard {
   bool holds_mutex;
 
@@ -190,6 +193,7 @@ public:
     return holds_mutex;
   };
 };
+#endif
 }  // namespace
 
 static inline bool _init_async_event_queue() {
@@ -286,7 +290,7 @@ inline lwip_tcp_event_packet_t *AsyncClient_detail::invalidate_pcb(AsyncClient &
 
 inline lwip_tcp_event_packet_t *AsyncClient_detail::get_async_event() {
   queue_mutex_guard guard;
-  lwip_tcp_event_packet_t *e  = _async_queue.pop_front();
+  lwip_tcp_event_packet_t *e = _async_queue.pop_front();
   // special case: override values
   if (e) {
     switch (e->event) {
