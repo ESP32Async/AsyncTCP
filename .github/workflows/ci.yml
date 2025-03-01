@@ -28,12 +28,17 @@ jobs:
           arduino-cli --config-file ${{ matrix.config }} core update-index
           arduino-cli --config-file ${{ matrix.config }} board listall
           arduino-cli --config-file ${{ matrix.config }} core install esp32:esp32
-      - name: Compile Sketch
+
+      - name: Client
         run: arduino-cli --config-file ${{ matrix.config }} --library ./src/ compile --fqbn esp32:esp32:esp32 ./examples/Client/Client.ino
-      - name: Compile Sketch with IPv6
+
+      - name: Client IPv6
         env:
           LWIP_IPV6: true
         run: arduino-cli --config-file ${{ matrix.config }} --library ./src/ compile --fqbn esp32:esp32:esp32 ./examples/Client/Client.ino
+
+      - name: FetchWebsite
+        run: arduino-cli --config-file ${{ matrix.config }} --library ./src/ compile --fqbn esp32:esp32:esp32 ./examples/FetchWebsite/FetchWebsite.ino
 
   platformio:
     name: "pio:${{ matrix.env }}:${{ matrix.board }}"
@@ -62,6 +67,17 @@ jobs:
           - env: ci-arduino-3
             board: esp32-c6-devkitc-1
 
+          - env: ci-arduino-3-latest
+            board: esp32dev
+          - env: ci-arduino-3-latest
+            board: esp32-s2-saola-1
+          - env: ci-arduino-3-latest
+            board: esp32-s3-devkitc-1
+          - env: ci-arduino-3-latest
+            board: esp32-c3-devkitc-02
+          - env: ci-arduino-3-latest
+            board: esp32-c6-devkitc-1
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -85,3 +101,4 @@ jobs:
           pip install --upgrade platformio
 
       - run: PLATFORMIO_SRC_DIR=examples/Client PIO_BOARD=${{ matrix.board }} pio run -e ${{ matrix.env }}
+      - run: PLATFORMIO_SRC_DIR=examples/FetchWebsite PIO_BOARD=${{ matrix.board }} pio run -e ${{ matrix.env }}

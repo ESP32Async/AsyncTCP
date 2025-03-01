@@ -29,8 +29,6 @@ extern "C" {
 #include <NetworkInterface.h>
 #endif
 
-#define TAG "AsyncTCP"
-
 // https://github.com/espressif/arduino-esp32/issues/10526
 namespace {
 #ifdef CONFIG_LWIP_TCPIP_CORE_LOCKING
@@ -342,7 +340,7 @@ void AsyncClient_detail::handle_async_event(lwip_tcp_event_packet_t *e) {
   else if (e->event == LWIP_TCP_RECV) {
     DEBUG_PRINTF("-R: 0x%08x", e->client->_pcb);
     e->client->_recv(e->recv.pb, e->recv.err);
-    e->recv.pb = nullptr; // Consumed by client
+    e->recv.pb = nullptr;  // Consumed by client
   } else if (e->event == LWIP_TCP_FIN) {
     DEBUG_PRINTF("-F: 0x%08x", e->client->_pcb);
     e->client->_fin(e->fin.err);
@@ -1537,29 +1535,32 @@ void AsyncServer::end() {
 // runs on LwIP thread
 int8_t AsyncServer::_accept(tcp_pcb *pcb, int8_t err) {
   DEBUG_PRINTF("+A: 0x%08x %d", pcb, err);
-  if (pcb) {
-    if (_connect_cb) {
-      AsyncClient *c = new (std::nothrow) AsyncClient(pcb);
-      if (c && c->pcb()) {
-        c->setNoDelay(_noDelay);
-        if (_tcp_accept(this, c) == ERR_OK) {
-          return ERR_OK;  // success
-        }
-      }
-      if (c) {
-        // Couldn't complete setup
-        // pcb has already been aborted
-        delete c;
-        pcb = nullptr;
-      }
-    }
-    if (pcb) {
-      if (tcp_close(pcb) != ERR_OK) {
-        tcp_abort(pcb);
-      }
-    }
+  if (!pcb) {
+    log_e("_accept failed: pcb is NULL");
+    return ERR_ABRT;
   }
-  log_e("TCP ACCEPT FAIL");
+
+  if (_connect_cb) {
+    AsyncClient *c = new (std::nothrow) AsyncClient(pcb);
+    if (c && c->pcb()) {
+      c->setNoDelay(_noDelay);
+      if (_tcp_accept(this, c) == ERR_OK) {
+        return ERR_OK;  // success
+      }
+    }
+    if (c) {
+      // Couldn't complete setup
+      // pcb has already been aborted
+      delete c;
+      log_e("_accept failed: couldn't accept client");
+      return ERR_ABRT;
+    }
+    log_e("_accept failed: couldn't allocate client");
+  } else {
+    log_e("_accept failed: no onConnect callback");
+  }
+
+  tcp_abort(pcb);
   return ERR_OK;
 }
 
