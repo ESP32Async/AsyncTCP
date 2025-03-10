@@ -285,21 +285,26 @@ inline lwip_tcp_event_packet_t *AsyncClient_detail::invalidate_pcb(AsyncClient &
   _teardown_pcb(client._pcb);
   client._pcb = nullptr;
   client._end_event = nullptr;
+  _remove_events_for(&client);
+#ifdef CONFIG_ASYNC_TCP_COALESCE_RECV
+  client._recv_pending = nullptr;  // killed by _remove_events_for
+#endif
   return end_event;
 };
 
 inline lwip_tcp_event_packet_t *AsyncClient_detail::get_async_event() {
   queue_mutex_guard guard;
   lwip_tcp_event_packet_t *e = _async_queue.pop_front();
-  // special case: override values
+  // special case: override values while holding the lock
   if (e) {
     switch (e->event) {
+#ifdef CONFIG_ASYNC_TCP_COALESCE_RECV
       case LWIP_TCP_RECV:
-        if ((e->recv.err == 0) && (e->recv.pb == nullptr)) {
-          e->recv.pb = e->client->_recv_pending;
+        if (e->client->_recv_pending == e) {
           e->client->_recv_pending = nullptr;
         }
         break;
+#endif
       case LWIP_TCP_SENT:
         e->sent.len = e->client->_sent_pending;
         e->client->_sent_pending = 0;
@@ -473,12 +478,12 @@ int8_t AsyncClient_detail::tcp_recv(void *arg, struct tcp_pcb *pcb, struct pbuf 
     queue_mutex_guard guard;
 
     // Coalesce event, if possible
-    if (err == 0) {
-      if (client->_recv_pending) {
-        pbuf_cat(client->_recv_pending, pb);
-        return ERR_OK;
-      }
+#ifdef CONFIG_ASYNC_TCP_COALESCE_RECV
+    if ((err == 0) && (client->_recv_pending)) {
+      pbuf_cat(client->_recv_pending->pb, pb);
+      return ERR_OK;
     }
+#endif
 
     lwip_tcp_event_packet_t *e = _alloc_event(LWIP_TCP_RECV, client, pcb);
     if (e == nullptr) {
@@ -486,13 +491,17 @@ int8_t AsyncClient_detail::tcp_recv(void *arg, struct tcp_pcb *pcb, struct pbuf 
       return ERR_MEM;  // TODO - error handling???
     }
 
-    if (err == 0) {
-      client->_recv_pending = pb;
-      e->recv.pb = nullptr;
-    } else {
-      e->recv.pb = pb;
-    }
+    e->recv.pb = pb;
     e->recv.err = err;
+#ifdef CONFIG_ASYNC_TCP_COALESCE_RECV
+    if (err == 0) {
+      client->_recv_pending = e;
+    } else {
+      // if we had one, we can no longer extend it
+      client->_recv_pending = nullptr;
+    }
+#endif
+
     _send_async_event(e);
   } else {
     DEBUG_PRINTF("+F: 0x%08x -> 0x%08x", pcb, arg);
@@ -537,11 +546,10 @@ void AsyncClient_detail::tcp_error(void *arg, int8_t err) {
   assert(client);
   // The associated pcb is now invalid and will soon be deallocated
   // We call on the preallocated end event from the client object
+  queue_mutex_guard guard;
   lwip_tcp_event_packet_t *e = AsyncClient_detail::invalidate_pcb(*client);
   if (e) {
     e->error.err = err;
-    queue_mutex_guard guard;
-    _remove_events_for(client);  // FUTURE: we could hold the lock the whole time
     _prepend_async_event(e);
   } else {
     log_e("tcp_error call for client %X with no end event", (intptr_t)client);
@@ -647,26 +655,28 @@ static err_t _tcp_recved_api(struct tcpip_api_call_data *api_call_msg) {
   return msg->err;
 }
 
-// Sets *pcb_ptr to nullptr
+// Unlike LwIP's tcp_close, we don't permit failure
+// If the pcb can't be closed cleanly, we abort it.
 static err_t _tcp_close_api(struct tcpip_api_call_data *api_call_msg) {
   tcp_api_call_t *msg = (tcp_api_call_t *)api_call_msg;
   msg->err = ERR_CONN;
-  if (msg->client) {
-    // Client has requested close; purge all events from queue
-    queue_mutex_guard guard;
-    _remove_events_for(msg->client);
-  }
   if (pcb_is_active(*msg)) {
-    _teardown_pcb(*msg->pcb_ptr);
-    msg->err = tcp_close(*msg->pcb_ptr);
+    auto pcb = *msg->pcb_ptr;
+    if (msg->client) {
+      // Client has requested close; complete teardown
+      queue_mutex_guard guard;
+      _free_event(AsyncClient_detail::invalidate_pcb(*msg->client));
+    }
+    msg->err = tcp_close(pcb);
     if (msg->err != ERR_OK) {
-      tcp_abort(*msg->pcb_ptr);
+      tcp_abort(pcb);
     }
     *msg->pcb_ptr = nullptr;
   }
   return msg->err;
 }
 
+// Sets *pcb_ptr to nullptr
 static esp_err_t _tcp_close(tcp_pcb **pcb_ptr, AsyncClient *client) {
   if (!pcb_ptr || !*pcb_ptr) {
     return ERR_CONN;
@@ -678,7 +688,6 @@ static esp_err_t _tcp_close(tcp_pcb **pcb_ptr, AsyncClient *client) {
   return msg.err;
 }
 
-// Sets *pcb_ptr to nullptr
 static err_t _tcp_abort_api(struct tcpip_api_call_data *api_call_msg) {
   tcp_api_call_t *msg = (tcp_api_call_t *)api_call_msg;
   msg->err = ERR_CONN;
@@ -694,6 +703,7 @@ static err_t _tcp_abort_api(struct tcpip_api_call_data *api_call_msg) {
   return msg->err;
 }
 
+// Sets *pcb_ptr to nullptr
 static esp_err_t _tcp_abort(tcp_pcb **pcb_ptr, AsyncClient *client) {
   if (!pcb_ptr || !*pcb_ptr) {
     return ERR_CONN;
@@ -753,9 +763,12 @@ static tcp_pcb *_tcp_listen_with_backlog(tcp_pcb *pcb, uint8_t backlog) {
  */
 
 AsyncClient::AsyncClient(tcp_pcb *pcb)
-  : _pcb(pcb), _end_event(nullptr), _needs_discard(pcb != nullptr), _polls_pending(0), _recv_pending(nullptr), _sent_pending(0), _connect_cb(0),
-    _connect_cb_arg(0), _discard_cb(0), _discard_cb_arg(0), _sent_cb(0), _sent_cb_arg(0), _error_cb(0), _error_cb_arg(0), _recv_cb(0), _recv_cb_arg(0),
-    _pb_cb(0), _pb_cb_arg(0), _timeout_cb(0), _timeout_cb_arg(0), _ack_pcb(true), _tx_last_packet(0), _rx_timeout(0), _rx_last_ack(0),
+  : _pcb(pcb), _end_event(nullptr), _needs_discard(pcb != nullptr), _polls_pending(0), _sent_pending(0),
+#ifdef CONFIG_ASYNC_TCP_COALESCE_RECV
+    _recv_pending(nullptr),
+#endif
+    _connect_cb(0), _connect_cb_arg(0), _discard_cb(0), _discard_cb_arg(0), _sent_cb(0), _sent_cb_arg(0), _error_cb(0), _error_cb_arg(0), _recv_cb(0),
+    _recv_cb_arg(0), _pb_cb(0), _pb_cb_arg(0), _timeout_cb(0), _timeout_cb_arg(0), _ack_pcb(true), _tx_last_packet(0), _rx_timeout(0), _rx_last_ack(0),
     _ack_timeout(CONFIG_ASYNC_TCP_MAX_ACK_TIME), _connect_port(0) {
   if (_pcb) {
     tcp_core_guard tg;
@@ -763,7 +776,7 @@ AsyncClient::AsyncClient(tcp_pcb *pcb)
     _rx_last_packet = millis();
     if (!_end_event) {
       // Out of memory!!
-      log_e("Unable to allocate event");
+      log_e("Unable to allocate error event");
       // Swallow this PCB, producing a null client object
       tcp_abort(_pcb);
       _pcb = nullptr;
@@ -778,12 +791,10 @@ AsyncClient::~AsyncClient() {
   if (_pcb) {
     _close();
   }
-  if (_end_event) {
-    _free_event(_end_event);
-  }
-  if (_recv_pending) {
-    pbuf_free(_recv_pending);
-  }
+  assert(!_end_event);  // should have been cleaned up by _close
+#ifdef CONFIG_ASYNC_TCP_COALESCE_RECV
+  assert(!_recv_pending);
+#endif
   assert(_needs_discard == false);  // If we needed the discard callback, it must have been called by now
                                     // We take care to clear this flag before calling the discard callback
                                     // as the discard callback commonly destructs the AsyncClient object.
