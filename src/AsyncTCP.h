@@ -13,6 +13,7 @@
 #endif
 #include "lwip/ip6_addr.h"
 #include "lwip/ip_addr.h"
+#include <atomic>
 #include <functional>
 
 #ifndef LIBRETINY
@@ -250,8 +251,8 @@ protected:
   tcp_pcb *_pcb;
   lwip_tcp_event_packet_t *_end_event;
   bool _needs_discard;
-  unsigned _polls_pending;
-  uint16_t _sent_pending;
+  std::atomic<unsigned> _polls_pending;
+  std::atomic<uint16_t> _sent_pending;
 #ifdef CONFIG_ASYNC_TCP_COALESCE_RECV
   struct lwip_tcp_event_packet_t *_recv_pending;
 #endif

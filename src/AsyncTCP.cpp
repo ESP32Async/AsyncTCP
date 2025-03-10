@@ -97,9 +97,6 @@ struct lwip_tcp_event_packet_t {
       int8_t err;
     } error;
     struct {
-      uint16_t len;
-    } sent;
-    struct {
       pbuf *pb;
       int8_t err;
     } recv;
@@ -296,23 +293,11 @@ inline lwip_tcp_event_packet_t *AsyncClient_detail::get_async_event() {
   queue_mutex_guard guard;
   lwip_tcp_event_packet_t *e = _async_queue.pop_front();
   // special case: override values while holding the lock
-  if (e) {
-    switch (e->event) {
 #ifdef CONFIG_ASYNC_TCP_COALESCE_RECV
-      case LWIP_TCP_RECV:
-        if (e->client->_recv_pending == e) {
-          e->client->_recv_pending = nullptr;
-        }
-        break;
-#endif
-      case LWIP_TCP_SENT:
-        e->sent.len = e->client->_sent_pending;
-        e->client->_sent_pending = 0;
-        break;
-      case LWIP_TCP_POLL: e->client->_polls_pending = 0; break;
-      default:            break;
-    }
+  if (e && (e->event = LWIP_TCP_RECV) & & (e->client->_recv_pending == e)) {
+    e->client->_recv_pending = nullptr;
   }
+#endif
   DEBUG_PRINTF("0x%08x", (intptr_t)e);
   return e;
 }
@@ -351,9 +336,11 @@ void AsyncClient_detail::handle_async_event(lwip_tcp_event_packet_t *e) {
     e->client->_fin(e->fin.err);
   } else if (e->event == LWIP_TCP_SENT) {
     DEBUG_PRINTF("-S: 0x%08x", e->client->_pcb);
-    e->client->_sent(e->sent.len);
+    auto sent = e->client->_sent_pending.exchange(0);
+    e->client->_sent(sent);
   } else if (e->event == LWIP_TCP_POLL) {
     DEBUG_PRINTF("-P: 0x%08x", e->client->_pcb);
+    e->client->_polls_pending.store(0);
     e->client->_poll();
   } else if (e->event == LWIP_TCP_CONNECTED) {
     DEBUG_PRINTF("-C: 0x%08x 0x%08x %d", e->client, e->client->_pcb, e->connected.err);
@@ -454,9 +441,7 @@ int8_t AsyncClient_detail::tcp_poll(void *arg, struct tcp_pcb *pcb) {
   AsyncClient *client = reinterpret_cast<AsyncClient *>(arg);
 
   // Coalesce event, if possible
-  queue_mutex_guard guard;
-  if (client->_polls_pending) {
-    ++client->_polls_pending;
+  if (client->_polls_pending++ != 0) {
     return ERR_OK;
   }
 
@@ -465,7 +450,7 @@ int8_t AsyncClient_detail::tcp_poll(void *arg, struct tcp_pcb *pcb) {
     return ERR_MEM;
   }
 
-  assert(client->_polls_pending == 0);
+  queue_mutex_guard guard;
   _send_async_event(e);
   return ERR_OK;
 }
@@ -523,19 +508,15 @@ int8_t AsyncClient_detail::tcp_sent(void *arg, struct tcp_pcb *pcb, uint16_t len
   AsyncClient *client = reinterpret_cast<AsyncClient *>(arg);
 
   // Coalesce event, if possible
-  queue_mutex_guard guard;
-  if (client->_sent_pending) {
-    client->_sent_pending += len;
-    return ERR_OK;
-  }
+  auto _prev_pending = client->_sent_pending.fetch_add(len);
+  if (_prev_pending) return ERR_OK;
 
   lwip_tcp_event_packet_t *e = _alloc_event(LWIP_TCP_SENT, client, pcb);
   if (e == nullptr) {
     return ERR_MEM;
   }
 
-  assert(client->_sent_pending == 0);
-  client->_sent_pending = len;
+  queue_mutex_guard guard;
   _send_async_event(e);
   return ERR_OK;
 }
