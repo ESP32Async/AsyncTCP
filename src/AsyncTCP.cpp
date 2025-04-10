@@ -1,9 +1,25 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright 2016-2025 Hristo Gochkov, Mathieu Carbou, Emil Muratov
-
-#include "Arduino.h"
-
+// #define NO_ARDUINO
 #include "AsyncTCP.h"
+
+#if defined(USING_PURE_ESP_IDF_V5_PLUS)
+  #define log_e(...) ESP_LOGE(__FILE__, __VA_ARGS__)
+  #define log_w(...) ESP_LOGW(__FILE__, __VA_ARGS__)
+  #define log_i(...) ESP_LOGI(__FILE__, __VA_ARGS__)
+  #define log_d(...) ESP_LOGD(__FILE__, __VA_ARGS__)
+  #define log_v(...) ESP_LOGV(__FILE__, __VA_ARGS__)
+
+  #define millis() (esp_timer_get_time() / 1000ULL)
+#else
+  #include "Arduino.h"
+  #if(ESP_IDF_VERSION_MAJOR >= 5)
+    #include <NetworkInterface.h>
+  #endif
+#endif
+
+
+#include <esp_log.h>
 
 extern "C" {
 #include "lwip/dns.h"
@@ -19,9 +35,7 @@ extern "C" {
 
 // Required for:
 // https://github.com/espressif/arduino-esp32/blob/3.0.3/libraries/Network/src/NetworkInterface.cpp#L37-L47
-#if ESP_IDF_VERSION_MAJOR >= 5
-#include <NetworkInterface.h>
-#endif
+
 
 // https://github.com/espressif/arduino-esp32/issues/10526
 #ifdef CONFIG_LWIP_TCPIP_CORE_LOCKING
@@ -862,6 +876,12 @@ bool AsyncClient::_connect(ip_addr_t addr, uint16_t port) {
   return err == ESP_OK;
 }
 
+#if defined(USING_PURE_ESP_IDF_V5_PLUS)
+bool AsyncClient::connect(const ip_addr_t &ip, uint16_t port) {
+  return _connect(ip, port);
+}
+
+#else
 bool AsyncClient::connect(const IPAddress &ip, uint16_t port) {
   ip_addr_t addr;
 #if ESP_IDF_VERSION_MAJOR < 5
@@ -873,7 +893,7 @@ bool AsyncClient::connect(const IPAddress &ip, uint16_t port) {
 
   return _connect(addr, port);
 }
-
+#endif
 #if LWIP_IPV6 && ESP_IDF_VERSION_MAJOR < 5
 bool AsyncClient::connect(const IPv6Address &ip, uint16_t port) {
   auto ipaddr = static_cast<const uint32_t *>(ip);
@@ -1073,7 +1093,7 @@ void AsyncClient::_error(int8_t err) {
 // In LwIP Thread
 int8_t AsyncClient::_lwip_fin(tcp_pcb *pcb, int8_t err) {
   if (!_pcb || pcb != _pcb) {
-    log_d("0x%08x != 0x%08x", (uint32_t)pcb, (uint32_t)_pcb);
+    log_d("0x%08" PRIx32 " != 0x%08" PRIx32, (uint32_t)pcb, (uint32_t)_pcb);
     return ERR_OK;
   }
   tcp_arg(_pcb, NULL);
@@ -1139,7 +1159,7 @@ int8_t AsyncClient::_poll(tcp_pcb *pcb) {
     return ERR_OK;
   }
   if (pcb != _pcb) {
-    log_d("0x%08x != 0x%08x", (uint32_t)pcb, (uint32_t)_pcb);
+    log_d("0x%08" PRIx32 " != 0x%08" PRIx32, (uint32_t)pcb, (uint32_t)_pcb);
     return ERR_OK;
   }
 
@@ -1171,7 +1191,17 @@ int8_t AsyncClient::_poll(tcp_pcb *pcb) {
 }
 
 void AsyncClient::_dns_found(struct ip_addr *ipaddr) {
-#if ESP_IDF_VERSION_MAJOR < 5
+#if defined(USING_PURE_ESP_IDF_V5_PLUS)
+  if (ipaddr) {
+    // Decide based on IP type
+    if (IP_IS_V6(ipaddr)) {
+      // IPv6
+      _connect(*ipaddr, _connect_port);  // assuming connect(ip_addr_t, port)
+    } else if (IP_IS_V4(ipaddr)) {
+      // IPv4
+      _connect(*ipaddr, _connect_port);  // same here
+    }
+#elif ESP_IDF_VERSION_MAJOR < 5
   if (ipaddr && IP_IS_V4(ipaddr)) {
     connect(IPAddress(ip_addr_get_ip4_u32(ipaddr)), _connect_port);
 #if LWIP_IPV6
@@ -1298,6 +1328,28 @@ ip6_addr_t AsyncClient::getLocalAddress6() const {
   }
   return _pcb->local_ip.u_addr.ip6;
 }
+
+#if defined(USING_PURE_ESP_IDF_V5_PLUS)
+ip6_addr_t AsyncClient::remoteIP6() const {
+  ip6_addr_t ip6;
+
+  if (_pcb) {
+    ip6 = _pcb->remote_ip.u_addr.ip6;
+  }
+
+  return ip6;
+}
+
+ip6_addr_t AsyncClient::localIP6() const {
+  ip6_addr_t ip6;
+
+  if (_pcb) {
+    ip6 = _pcb->local_ip.u_addr.ip6;
+  }
+
+  return ip6;
+}
+#else
 #if ESP_IDF_VERSION_MAJOR < 5
 IPv6Address AsyncClient::remoteIP6() const {
   return IPv6Address(getRemoteAddress6().addr);
@@ -1326,6 +1378,7 @@ IPAddress AsyncClient::localIP6() const {
 }
 #endif
 #endif
+#endif
 
 uint16_t AsyncClient::getRemotePort() const {
   if (!_pcb) {
@@ -1352,35 +1405,60 @@ uint16_t AsyncClient::getLocalPort() const {
   return _pcb->local_port;
 }
 
-IPAddress AsyncClient::remoteIP() const {
-#if ESP_IDF_VERSION_MAJOR < 5
-  return IPAddress(getRemoteAddress());
-#else
-  if (!_pcb) {
-    return IPAddress();
+#if defined(USING_PURE_ESP_IDF_V5_PLUS)
+ip4_addr_t AsyncClient::remoteIP() const {
+  
+  ip4_addr_t ip = {IPADDR_ANY};
+
+  if (_pcb && _pcb->remote_ip.type == IPADDR_TYPE_V4) {
+    ip = _pcb->remote_ip.u_addr.ip4;
   }
-  IPAddress ip;
-  ip.from_ip_addr_t(&(_pcb->remote_ip));
   return ip;
-#endif
+  
 }
+#else
+IPAddress AsyncClient::remoteIP() const {
+  #if ESP_IDF_VERSION_MAJOR < 5
+    return IPAddress(getRemoteAddress());
+  #else
+    if (!_pcb) {
+      return IPAddress();
+    }
+    IPAddress ip;
+    ip.from_ip_addr_t(&(_pcb->remote_ip));
+    return ip;
+  #endif
+  }
+#endif
 
 uint16_t AsyncClient::remotePort() const {
   return getRemotePort();
 }
 
-IPAddress AsyncClient::localIP() const {
-#if ESP_IDF_VERSION_MAJOR < 5
-  return IPAddress(getLocalAddress());
-#else
-  if (!_pcb) {
-    return IPAddress();
+#if defined(USING_PURE_ESP_IDF_V5_PLUS)
+ip4_addr_t AsyncClient::localIP() const {
+  ip4_addr_t ip = {IPADDR_ANY};
+
+  if (_pcb && _pcb->local_ip.type == IPADDR_TYPE_V4) {
+    ip = _pcb->local_ip.u_addr.ip4;
   }
-  IPAddress ip;
-  ip.from_ip_addr_t(&(_pcb->local_ip));
+
   return ip;
-#endif
 }
+#else
+IPAddress AsyncClient::localIP() const {
+  #if ESP_IDF_VERSION_MAJOR < 5
+    return IPAddress(getLocalAddress());
+  #else
+    if (!_pcb) {
+      return IPAddress();
+    }
+    IPAddress ip;
+    ip.from_ip_addr_t(&(_pcb->local_ip));
+    return ip;
+  #endif
+  }
+#endif
 
 uint16_t AsyncClient::localPort() const {
   return getLocalPort();
@@ -1512,6 +1590,11 @@ int8_t AsyncClient::_s_connected(void *arg, struct tcp_pcb *pcb, int8_t err) {
   Async TCP Server
  */
 
+#if defined(USING_PURE_ESP_IDF_V5_PLUS)
+AsyncServer::AsyncServer(ip_addr_t addr, uint16_t port)
+  : _port(port), _bind4(addr.type == IPADDR_TYPE_V4), _bind6(addr.type == IPADDR_TYPE_V6), _addr(addr), _noDelay(false), _pcb(nullptr), _connect_cb(nullptr),
+    _connect_cb_arg(nullptr) {}
+#else
 AsyncServer::AsyncServer(IPAddress addr, uint16_t port)
   : _port(port)
 #if ESP_IDF_VERSION_MAJOR < 5
@@ -1529,7 +1612,14 @@ AsyncServer::AsyncServer(IPAddress addr, uint16_t port)
 AsyncServer::AsyncServer(IPv6Address addr, uint16_t port)
   : _port(port), _bind4(false), _bind6(true), _addr6(addr), _noDelay(false), _pcb(0), _connect_cb(0), _connect_cb_arg(0) {}
 #endif
+#endif
 
+
+#if defined(USING_PURE_ESP_IDF_V5_PLUS)
+AsyncServer::AsyncServer(uint16_t port)
+  : _port(port), _bind4(true), _bind6(false), _addr({}),
+    _noDelay(false), _pcb(nullptr), _connect_cb(nullptr), _connect_cb_arg(nullptr) {}
+#else
 AsyncServer::AsyncServer(uint16_t port)
   : _port(port), _bind4(true), _bind6(false), _addr((uint32_t)IPADDR_ANY)
 #if ESP_IDF_VERSION_MAJOR < 5
@@ -1539,6 +1629,7 @@ AsyncServer::AsyncServer(uint16_t port)
     ,
     _noDelay(false), _pcb(0), _connect_cb(0), _connect_cb_arg(0) {
 }
+#endif
 
 AsyncServer::~AsyncServer() {
   end();
@@ -1567,7 +1658,7 @@ void AsyncServer::begin() {
     return;
   }
 
-  ip_addr_t local_addr;
+  // ip_addr_t local_addr = _addr;
 #if ESP_IDF_VERSION_MAJOR < 5
   if (_bind6) {  // _bind6 && _bind4 both at the same time is not supported on Arduino 2 in this lib API
     local_addr.type = IPADDR_TYPE_V6;
@@ -1576,10 +1667,10 @@ void AsyncServer::begin() {
     local_addr.type = IPADDR_TYPE_V4;
     local_addr.u_addr.ip4.addr = _addr;
   }
-#else
-  _addr.to_ip_addr_t(&local_addr);
+  // #else
+  // _addr.to_ip_addr_t(&local_addr);
 #endif
-  err = _tcp_bind(_pcb, &local_addr, _port);
+  err = _tcp_bind(_pcb, &_addr, _port);
 
   if (err != ERR_OK) {
     _tcp_close(_pcb, -1);

@@ -7,27 +7,35 @@
 #include "AsyncTCPVersion.h"
 #define ASYNCTCP_FORK_ESP32Async
 
-#include "IPAddress.h"
-#if ESP_IDF_VERSION_MAJOR < 5
-#include "IPv6Address.h"
-#endif
+
 #include "lwip/ip6_addr.h"
 #include "lwip/ip_addr.h"
 #include <functional>
 
-#ifndef LIBRETINY
-#include "sdkconfig.h"
-extern "C" {
-#include "freertos/semphr.h"
-#include "lwip/pbuf.h"
-}
-#else
-extern "C" {
-#include <lwip/pbuf.h>
-#include <semphr.h>
-}
-#define CONFIG_ASYNC_TCP_RUNNING_CORE -1  // any available core
+#if defined(ESP_PLATFORM) && (ESP_IDF_VERSION_MAJOR >= 5) && !defined(ARDUINO)
+  #define USING_PURE_ESP_IDF_V5_PLUS
+#elif(ESP_IDF_VERSION_MAJOR >= 5)
+  #include "IPAddress.h"
+  #if ESP_IDF_VERSION_MAJOR < 5
+    #include "IPv6Address.h"
+  #endif
 #endif
+
+#ifndef LIBRETINY
+  #include "sdkconfig.h"
+  extern "C" {
+  #include "freertos/semphr.h"
+  #include "lwip/pbuf.h"
+  }
+#else
+  extern "C" {
+  #include <lwip/pbuf.h>
+  #include <semphr.h>
+  }
+  #define CONFIG_ASYNC_TCP_RUNNING_CORE -1  // any available core
+#endif
+
+
 
 // If core is not defined, then we are running in Arduino or PIO
 #ifndef CONFIG_ASYNC_TCP_RUNNING_CORE
@@ -83,7 +91,9 @@ public:
   bool operator!=(const AsyncClient &other) const {
     return !(*this == other);
   }
-  bool connect(const IPAddress &ip, uint16_t port);
+#if defined(USING_PURE_ESP_IDF_V5_PLUS)
+  bool connect(const ip_addr_t &ip, uint16_t port);
+#endif
 #if ESP_IDF_VERSION_MAJOR < 5
   bool connect(const IPv6Address &ip, uint16_t port);
 #endif
@@ -185,19 +195,29 @@ public:
 #if LWIP_IPV6
   ip6_addr_t getRemoteAddress6() const;
   ip6_addr_t getLocalAddress6() const;
-#if ESP_IDF_VERSION_MAJOR < 5
-  IPv6Address remoteIP6() const;
-  IPv6Address localIP6() const;
-#else
-  IPAddress remoteIP6() const;
-  IPAddress localIP6() const;
-#endif
+  #if defined(USING_PURE_ESP_IDF_V5_PLUS)
+    ip6_addr_t remoteIP6() const;
+    ip6_addr_t localIP6() const;
+  #else
+    #if ESP_IDF_VERSION_MAJOR < 5
+      IPv6Address remoteIP6() const;
+      IPv6Address localIP6() const;
+    #else
+      IPAddress remoteIP6() const;
+      IPAddress localIP6() const;
+    #endif
+  #endif
 #endif
 
   // compatibility
+#if defined(USING_PURE_ESP_IDF_V5_PLUS)
+  ip4_addr_t remoteIP() const;
+  ip4_addr_t localIP() const;
+#else
   IPAddress remoteIP() const;
-  uint16_t remotePort() const;
   IPAddress localIP() const;
+#endif
+  uint16_t remotePort() const;
   uint16_t localPort() const;
 
   // set callback - on successful connect
@@ -298,9 +318,12 @@ public:
 
 class AsyncServer {
 public:
-  AsyncServer(IPAddress addr, uint16_t port);
-#if ESP_IDF_VERSION_MAJOR < 5
-  AsyncServer(IPv6Address addr, uint16_t port);
+#if defined(USING_PURE_ESP_IDF_V5_PLUS)
+  AsyncServer(ip_addr_t addr, uint16_t port);
+#else
+  #if ESP_IDF_VERSION_MAJOR < 5
+    AsyncServer(IPv6Address addr, uint16_t port);
+  #endif
 #endif
   AsyncServer(uint16_t port);
   ~AsyncServer();
@@ -319,7 +342,11 @@ protected:
   uint16_t _port;
   bool _bind4 = false;
   bool _bind6 = false;
+#if defined(USING_PURE_ESP_IDF_V5_PLUS)
+  ip_addr_t _addr;
+#else
   IPAddress _addr;
+#endif
 #if ESP_IDF_VERSION_MAJOR < 5
   IPv6Address _addr6;
 #endif
