@@ -102,3 +102,40 @@ jobs:
 
       - run: PLATFORMIO_SRC_DIR=examples/Client PIO_BOARD=${{ matrix.board }} pio run -e ${{ matrix.env }}
       - run: PLATFORMIO_SRC_DIR=examples/FetchWebsite PIO_BOARD=${{ matrix.board }} pio run -e ${{ matrix.env }}
+
+  esp-idf:
+    name: Build with ESP-IDF ${{ matrix.idf_ver }} for ${{ matrix.idf_target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The version names here correspond to the versions of espressif/idf Docker image.
+        # See https://hub.docker.com/r/espressif/idf/tags and
+        # https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-guides/tools/idf-docker-image.html
+        # for details.
+        idf_ver: ["release-v5.4"]
+        idf_target:
+          [
+            "esp32",
+            "esp32s2",
+            "esp32s3",
+            "esp32c2",
+            "esp32c3",
+            "esp32c6",
+            "esp32h2",
+            "esp32p4"
+          ]
+    container: espressif/idf:${{ matrix.idf_ver }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: components/asynctcp
+
+      - name: Build
+        env:
+          IDF_TARGET: ${{ matrix.idf_target }}
+        shell: bash
+        run: |
+          . ${IDF_PATH}/export.sh
+           idf.py -C ./components/asynctcp/idf_component_examples/client -DEXTRA_COMPONENT_DIRS=$PWD/components build
