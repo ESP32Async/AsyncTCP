@@ -74,14 +74,20 @@ typedef std::function<void(void *, AsyncClient *, uint32_t time)> AcTimeoutHandl
 
 struct tcp_pcb;
 struct ip_addr;
+class AsyncTCP_detail;
 
 class AsyncClient {
 public:
   AsyncClient(tcp_pcb *pcb = 0);
   ~AsyncClient();
 
-  AsyncClient &operator=(const AsyncClient &other);
-  AsyncClient &operator+=(const AsyncClient &other);
+  // Noncopyable
+  AsyncClient(const AsyncClient &) = delete;
+  AsyncClient &operator=(const AsyncClient &) = delete;
+
+  // Nonmovable
+  AsyncClient(AsyncClient &&) = delete;
+  AsyncClient &operator=(AsyncClient &&) = delete;
 
   bool operator==(const AsyncClient &other) const;
 
@@ -250,23 +256,13 @@ public:
   static const char *errorToString(int8_t error);
   const char *stateToString() const;
 
-  // internal callbacks - Do NOT call any of the functions below in user code!
-  static int8_t _s_poll(void *arg, struct tcp_pcb *tpcb);
-  static int8_t _s_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *pb, int8_t err);
-  static int8_t _s_fin(void *arg, struct tcp_pcb *tpcb, int8_t err);
-  static int8_t _s_lwip_fin(void *arg, struct tcp_pcb *tpcb, int8_t err);
-  static void _s_error(void *arg, int8_t err);
-  static int8_t _s_sent(void *arg, struct tcp_pcb *tpcb, uint16_t len);
-  static int8_t _s_connected(void *arg, struct tcp_pcb *tpcb, int8_t err);
-  static void _s_dns_found(const char *name, struct ip_addr *ipaddr, void *arg);
-  static void _tcp_error(void *arg, int8_t err);
-
   int8_t _recv(tcp_pcb *pcb, pbuf *pb, int8_t err);
   tcp_pcb *pcb() {
     return _pcb;
   }
 
 protected:
+  friend class AsyncTCP_detail;
   friend class AsyncServer;
 
   tcp_pcb *_pcb;
@@ -308,10 +304,6 @@ protected:
   int8_t _fin(tcp_pcb *pcb, int8_t err);
   int8_t _lwip_fin(tcp_pcb *pcb, int8_t err);
   void _dns_found(struct ip_addr *ipaddr);
-
-public:
-  AsyncClient *prev;
-  AsyncClient *next;
 };
 
 class AsyncServer {
@@ -332,11 +324,9 @@ public:
   bool getNoDelay() const;
   uint8_t status() const;
 
-  // Do not use any of the functions below!
-  static int8_t _s_accept(void *arg, tcp_pcb *newpcb, int8_t err);
-  static int8_t _s_accepted(void *arg, AsyncClient *client);
-
 protected:
+  friend class AsyncTCP_detail;
+
   uint16_t _port;
   ip_addr_t _addr;
   bool _noDelay;
