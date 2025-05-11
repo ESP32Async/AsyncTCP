@@ -1633,3 +1633,7 @@ uint8_t AsyncServer::status() const {
   }
   return _pcb->state;
 }
+
+UBaseType_t AsyncTCP_stats::getHighWaterMark() {
+  return uxTaskGetStackHighWaterMark(_async_service_task_handle);
+}

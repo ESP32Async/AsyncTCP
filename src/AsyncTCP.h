@@ -338,4 +338,9 @@ protected:
   int8_t _accepted(AsyncClient *client);
 };
 
+class AsyncTCP_stats {
+public:
+  static UBaseType_t getHighWaterMark();
+};
+
 #endif /* ASYNCTCP_H_ */
