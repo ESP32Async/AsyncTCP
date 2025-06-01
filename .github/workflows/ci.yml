@@ -78,6 +78,11 @@ jobs:
           - env: ci-arduino-3-latest
             board: esp32-c6-devkitc-1
 
+          - env: ci-arduino-libretiny
+            board: generic-bk7231n-qfn32-tuya
+          - env: ci-arduino-libretiny
+            board: generic-rtl8710bn-2mb-788k
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
