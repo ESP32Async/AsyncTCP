@@ -10,7 +10,7 @@
 #ifdef ARDUINO
 #include <esp32-hal.h>
 #include <esp32-hal-log.h>
-#if (ESP_IDF_VERSION_MAJOR >= 5)
+#if (ESP_IDF_VERSION_MAJOR >= 5) && !defined(ARDUINO)
 #include <NetworkInterface.h>
 #endif
 #else
