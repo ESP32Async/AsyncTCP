@@ -925,6 +925,10 @@ int8_t AsyncClient::abort() {
     _tcp_abort(&_pcb, this);
     // _pcb is now NULL
   }
+  if (_discard_cb) {
+    // _pcb was closed here
+    _discard_cb(_discard_cb_arg, this);
+  }
   return ERR_ABRT;
 }
 
