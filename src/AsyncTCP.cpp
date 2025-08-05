@@ -92,7 +92,7 @@ struct tcp_core_guard {
   TCP poll interval is specified in terms of the TCP coarse timer interval, which is called twice a second
   https://github.com/espressif/esp-lwip/blob/2acf959a2bb559313cd2bf9306c24612ba3d0e19/src/core/tcp.c#L1895
 */
-#define CONFIG_ASYNC_TCP_POLL_TIMER 1
+#define CONFIG_ASYNC_TCP_POLL_TIMER 2  // Called every 2 * 500ms
 
 /*
  * TCP/IP Event Task
