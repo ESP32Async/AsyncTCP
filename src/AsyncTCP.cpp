@@ -10,11 +10,11 @@
 #ifdef ARDUINO
 #include <esp32-hal.h>
 #include <esp32-hal-log.h>
+#else
+#include "esp_timer.h"
 #if (ESP_IDF_VERSION_MAJOR >= 5)
 #include <NetworkInterface.h>
 #endif
-#else
-#include "esp_timer.h"
 #define log_e(...) ESP_LOGE(__FILE__, __VA_ARGS__)
 #define log_w(...) ESP_LOGW(__FILE__, __VA_ARGS__)
 #define log_i(...) ESP_LOGI(__FILE__, __VA_ARGS__)
