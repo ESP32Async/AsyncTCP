@@ -7,10 +7,6 @@
 #include "AsyncTCPVersion.h"
 #define ASYNCTCP_FORK_ESP32Async
 
-#ifndef LIBRETINY
-#include <esp_idf_version.h>
-#endif
-
 #ifdef ARDUINO
 #include "IPAddress.h"
 #if __has_include(<IPv6Address.h>)

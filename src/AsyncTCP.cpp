@@ -2,31 +2,13 @@
 // Copyright 2016-2025 Hristo Gochkov, Mathieu Carbou, Emil Muratov
 
 #include "AsyncTCP.h"
+#include "AsyncTCPLogging.h"
 #include "AsyncTCPSimpleIntrusiveList.h"
 
-#ifndef LIBRETINY
-#include <esp_log.h>
-
-#ifdef ARDUINO
-#include <esp32-hal.h>
-#include <esp32-hal-log.h>
-#if (ESP_IDF_VERSION_MAJOR >= 5)
-#include <NetworkInterface.h>
-#endif
-#else
-#include "esp_timer.h"
-#define log_e(...) ESP_LOGE(__FILE__, __VA_ARGS__)
-#define log_w(...) ESP_LOGW(__FILE__, __VA_ARGS__)
-#define log_i(...) ESP_LOGI(__FILE__, __VA_ARGS__)
-#define log_d(...) ESP_LOGD(__FILE__, __VA_ARGS__)
-#define log_v(...) ESP_LOGV(__FILE__, __VA_ARGS__)
-static unsigned long millis() {
-  return (unsigned long)(esp_timer_get_time() / 1000ULL);
-}
-#endif
-#endif
-
-#ifdef LIBRETINY
+/**
+ * LibreTiny specific configurations
+ */
+#if defined(LIBRETINY)
 #include <Arduino.h>
 // LibreTiny does not support IDF - disable code that expects it to be available
 #define ESP_IDF_VERSION_MAJOR (0)
@@ -35,7 +17,28 @@ static unsigned long millis() {
 // ESP watchdog is not available
 #undef CONFIG_ASYNC_TCP_USE_WDT
 #define CONFIG_ASYNC_TCP_USE_WDT 0
-#endif
+#endif  // LIBRETINY
+
+/**
+ * Arduino specific configurations
+ */
+#if defined(ARDUINO) && !defined(LIBRETINY)
+#include <Arduino.h>
+#include <esp_idf_version.h>
+#if (ESP_IDF_VERSION_MAJOR >= 5)
+#include <NetworkInterface.h>
+#endif  // ESP_IDF_VERSION_MAJOR
+#endif  // ARDUINO
+
+/**
+ * ESP-IDF specific configurations
+ */
+#if !defined(LIBRETINY) && !defined(ARDUINO)
+#include "esp_timer.h"
+static unsigned long millis() {
+  return (unsigned long)(esp_timer_get_time() / 1000ULL);
+}
+#endif  // !LIBRETINY && !ARDUINO
 
 extern "C" {
 #include "lwip/dns.h"
@@ -231,7 +234,7 @@ static inline lwip_tcp_event_packet_t *_get_async_event() {
          next_pkt = _async_queue.begin()) {
       // if the next event that will come is a poll event for the same connection, we can discard it and continue
       _free_event(_async_queue.pop_front());
-      log_d("coalescing polls, network congestion or async callbacks might be too slow!");
+      async_tcp_log_d("coalescing polls, network congestion or async callbacks might be too slow!");
     }
 
     /*
@@ -245,7 +248,7 @@ static inline lwip_tcp_event_packet_t *_get_async_event() {
     */
     if (_async_queue.size() > (rand() % CONFIG_ASYNC_TCP_QUEUE_SIZE / 4 + CONFIG_ASYNC_TCP_QUEUE_SIZE * 3 / 4)) {
       _free_event(e);
-      log_d("discarding poll due to queue congestion");
+      async_tcp_log_d("discarding poll due to queue congestion");
       continue;
     }
 
@@ -308,7 +311,7 @@ void AsyncTCP_detail::handle_async_event(lwip_tcp_event_packet_t *e) {
 static void _async_service_task(void *pvParameters) {
 #if CONFIG_ASYNC_TCP_USE_WDT
   if (esp_task_wdt_add(NULL) != ESP_OK) {
-    log_w("Failed to add async task to WDT");
+    async_tcp_log_w("Failed to add async task to WDT");
   }
 #endif
   for (;;) {
@@ -404,7 +407,7 @@ static int8_t _tcp_connected(void *arg, tcp_pcb *pcb, int8_t err) {
   AsyncClient *client = reinterpret_cast<AsyncClient *>(arg);
   lwip_tcp_event_packet_t *e = new (std::nothrow) lwip_tcp_event_packet_t{LWIP_TCP_CONNECTED, client};
   if (!e) {
-    log_e("Failed to allocate event packet");
+    async_tcp_log_e("Failed to allocate event packet");
     return ERR_MEM;
   }
   e->connected.pcb = pcb;
@@ -418,9 +421,9 @@ int8_t AsyncTCP_detail::tcp_poll(void *arg, struct tcp_pcb *pcb) {
   // throttle polling events queueing when event queue is getting filled up, let it handle _onack's
   {
     queue_mutex_guard guard;
-    // log_d("qs:%u", _async_queue.size());
+    // async_tcp_log_d("qs:%u", _async_queue.size());
     if (_async_queue.size() > (rand() % CONFIG_ASYNC_TCP_QUEUE_SIZE / 2 + CONFIG_ASYNC_TCP_QUEUE_SIZE / 4)) {
-      log_d("throttling");
+      async_tcp_log_d("throttling");
       return ERR_OK;
     }
   }
@@ -429,7 +432,7 @@ int8_t AsyncTCP_detail::tcp_poll(void *arg, struct tcp_pcb *pcb) {
   AsyncClient *client = reinterpret_cast<AsyncClient *>(arg);
   lwip_tcp_event_packet_t *e = new (std::nothrow) lwip_tcp_event_packet_t{LWIP_TCP_POLL, client};
   if (!e) {
-    log_e("Failed to allocate event packet");
+    async_tcp_log_e("Failed to allocate event packet");
     return ERR_MEM;
   }
   e->poll.pcb = pcb;
@@ -443,7 +446,7 @@ int8_t AsyncTCP_detail::tcp_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *pb
   AsyncClient *client = reinterpret_cast<AsyncClient *>(arg);
   lwip_tcp_event_packet_t *e = new (std::nothrow) lwip_tcp_event_packet_t{LWIP_TCP_RECV, client};
   if (!e) {
-    log_e("Failed to allocate event packet");
+    async_tcp_log_e("Failed to allocate event packet");
     return ERR_MEM;
   }
   if (pb) {
@@ -470,7 +473,7 @@ int8_t AsyncTCP_detail::tcp_sent(void *arg, struct tcp_pcb *pcb, uint16_t len) {
   AsyncClient *client = reinterpret_cast<AsyncClient *>(arg);
   lwip_tcp_event_packet_t *e = new (std::nothrow) lwip_tcp_event_packet_t{LWIP_TCP_SENT, client};
   if (!e) {
-    log_e("Failed to allocate event packet");
+    async_tcp_log_e("Failed to allocate event packet");
     return ERR_MEM;
   }
   e->sent.pcb = pcb;
@@ -493,7 +496,7 @@ void AsyncTCP_detail::tcp_error(void *arg, int8_t err) {
   // enqueue event to be processed in the async task for the user callback
   lwip_tcp_event_packet_t *e = new (std::nothrow) lwip_tcp_event_packet_t{LWIP_TCP_ERROR, client};
   if (!e) {
-    log_e("Failed to allocate event packet");
+    async_tcp_log_e("Failed to allocate event packet");
     return;
   }
   e->error.err = err;
@@ -508,7 +511,7 @@ static void _tcp_dns_found(const char *name, ip_addr_t *ipaddr, void *arg) {
 
   lwip_tcp_event_packet_t *e = new (std::nothrow) lwip_tcp_event_packet_t{LWIP_TCP_DNS, client};
   if (!e) {
-    log_e("Failed to allocate event packet");
+    async_tcp_log_e("Failed to allocate event packet");
     return;
   }
 
@@ -819,11 +822,11 @@ void AsyncClient::onPoll(AcConnectHandler cb, void *arg) {
 
 bool AsyncClient::connect(ip_addr_t addr, uint16_t port) {
   if (_pcb) {
-    log_d("already connected, state %d", _pcb->state);
+    async_tcp_log_d("already connected, state %d", _pcb->state);
     return false;
   }
   if (!_start_async_task()) {
-    log_e("failed to start task");
+    async_tcp_log_e("failed to start task");
     return false;
   }
 
@@ -836,7 +839,7 @@ bool AsyncClient::connect(ip_addr_t addr, uint16_t port) {
     pcb = tcp_new_ip_type(IPADDR_TYPE_V4);
 #endif
     if (!pcb) {
-      log_e("pcb == NULL");
+      async_tcp_log_e("pcb == NULL");
       return false;
     }
     _bind_tcp_callbacks(pcb, this);
@@ -878,7 +881,7 @@ bool AsyncClient::connect(const char *host, uint16_t port) {
   ip_addr_t addr;
 
   if (!_start_async_task()) {
-    log_e("failed to start task");
+    async_tcp_log_e("failed to start task");
     return false;
   }
 
@@ -905,7 +908,7 @@ bool AsyncClient::connect(const char *host, uint16_t port) {
     _connect_port = port;
     return true;
   }
-  log_d("error: %d", err);
+  async_tcp_log_d("error: %d", err);
   return false;
 }
 
@@ -1018,7 +1021,7 @@ void AsyncClient::_error(int8_t err) {
 // In LwIP Thread
 int8_t AsyncClient::_lwip_fin(tcp_pcb *pcb, int8_t err) {
   if (!_pcb || pcb != _pcb) {
-    log_d("0x%08" PRIx32 " != 0x%08" PRIx32, (uint32_t)pcb, (uint32_t)_pcb);
+    async_tcp_log_d("0x%08" PRIx32 " != 0x%08" PRIx32, (uint32_t)pcb, (uint32_t)_pcb);
     return ERR_OK;
   }
   _reset_tcp_callbacks(_pcb, this);
@@ -1072,11 +1075,11 @@ int8_t AsyncClient::_recv(tcp_pcb *pcb, pbuf *pb, int8_t err) {
 
 int8_t AsyncClient::_poll(tcp_pcb *pcb) {
   if (!_pcb) {
-    // log_d("pcb is NULL");
+    // async_tcp_log_d("pcb is NULL");
     return ERR_OK;
   }
   if (pcb != _pcb) {
-    log_d("0x%08" PRIx32 " != 0x%08" PRIx32, (uint32_t)pcb, (uint32_t)_pcb);
+    async_tcp_log_d("0x%08" PRIx32 " != 0x%08" PRIx32, (uint32_t)pcb, (uint32_t)_pcb);
     return ERR_OK;
   }
 
@@ -1087,7 +1090,7 @@ int8_t AsyncClient::_poll(tcp_pcb *pcb) {
     const uint32_t one_day = 86400000;
     bool last_tx_is_after_last_ack = (_rx_last_ack - _tx_last_packet + one_day) < one_day;
     if (last_tx_is_after_last_ack && (now - _tx_last_packet) >= _ack_timeout) {
-      log_d("ack timeout %d", pcb->state);
+      async_tcp_log_d("ack timeout %d", pcb->state);
       if (_timeout_cb) {
         _timeout_cb(_timeout_cb_arg, this, (now - _tx_last_packet));
       }
@@ -1096,7 +1099,7 @@ int8_t AsyncClient::_poll(tcp_pcb *pcb) {
   }
   // RX Timeout
   if (_rx_timeout && (now - _rx_last_packet) >= (_rx_timeout * 1000)) {
-    log_d("rx timeout %d", pcb->state);
+    async_tcp_log_d("rx timeout %d", pcb->state);
     _close();
     return ERR_OK;
   }
@@ -1485,7 +1488,7 @@ void AsyncServer::begin() {
   }
 
   if (!_start_async_task()) {
-    log_e("failed to start task");
+    async_tcp_log_e("failed to start task");
     return;
   }
   int8_t err;
@@ -1498,7 +1501,7 @@ void AsyncServer::begin() {
 #endif
   }
   if (!_pcb) {
-    log_e("_pcb == NULL");
+    async_tcp_log_e("_pcb == NULL");
     return;
   }
 
@@ -1506,14 +1509,14 @@ void AsyncServer::begin() {
 
   if (err != ERR_OK) {
     // pcb was closed by _tcp_bind
-    log_e("bind error: %d", err);
+    async_tcp_log_e("bind error: %d", err);
     return;
   }
 
   static uint8_t backlog = 5;
   _pcb = _tcp_listen_with_backlog(_pcb, backlog);
   if (!_pcb) {
-    log_e("listen_pcb == NULL");
+    async_tcp_log_e("listen_pcb == NULL");
     return;
   }
   tcp_core_guard tcg;
@@ -1536,7 +1539,7 @@ void AsyncServer::end() {
 // runs on LwIP thread
 int8_t AsyncTCP_detail::tcp_accept(void *arg, tcp_pcb *pcb, int8_t err) {
   if (!pcb) {
-    log_e("_accept failed: pcb is NULL");
+    async_tcp_log_e("_accept failed: pcb is NULL");
     return ERR_ABRT;
   }
   auto server = reinterpret_cast<AsyncServer *>(arg);
@@ -1558,7 +1561,7 @@ int8_t AsyncTCP_detail::tcp_accept(void *arg, tcp_pcb *pcb, int8_t err) {
       // We can't let the client object call in to close, as we're on the LWIP thread; it could deadlock trying to RPC to itself
       c->_pcb = nullptr;
       tcp_abort(pcb);
-      log_e("_accept failed: couldn't accept client");
+      async_tcp_log_e("_accept failed: couldn't accept client");
       return ERR_ABRT;
     }
     if (c) {
@@ -1566,12 +1569,12 @@ int8_t AsyncTCP_detail::tcp_accept(void *arg, tcp_pcb *pcb, int8_t err) {
       // pcb has already been aborted
       delete c;
       pcb = nullptr;
-      log_e("_accept failed: couldn't complete setup");
+      async_tcp_log_e("_accept failed: couldn't complete setup");
       return ERR_ABRT;
     }
-    log_e("_accept failed: couldn't allocate client");
+    async_tcp_log_e("_accept failed: couldn't allocate client");
   } else {
-    log_e("_accept failed: no onConnect callback");
+    async_tcp_log_e("_accept failed: no onConnect callback");
   }
   tcp_abort(pcb);
   return ERR_OK;
