@@ -190,14 +190,18 @@ public:
 static SimpleIntrusiveList<lwip_tcp_event_packet_t> _async_queue;
 static TaskHandle_t _async_service_task_handle = NULL;
 
+#ifdef LIBRETINY
+// Libretiny does not have a hardware RNG like ESP32, so we implement a simple one
+// Note: the importance for AsyncTCP is speed, not quality of randomness
 static uint32_t _xor_shift_state = 31;  // any nonzero seed will do
-static uint32_t _xor_shift_next() {
+static uint32_t esp_random() {
   uint32_t x = _xor_shift_state;
   x ^= x << 13;
   x ^= x >> 17;
   x ^= x << 5;
   return _xor_shift_state = x;
 }
+#endif
 
 static void _free_event(lwip_tcp_event_packet_t *evpkt) {
   if ((evpkt->event == LWIP_TCP_RECV) && (evpkt->recv.pb != nullptr)) {
@@ -255,7 +259,7 @@ static inline lwip_tcp_event_packet_t *_get_async_event() {
       Let's discard poll events processing using linear-increasing probability curve when queue size grows over 3/4
       Poll events are periodic and connection could get another chance next time
     */
-    if (_async_queue.size() > (_xor_shift_next() % CONFIG_ASYNC_TCP_QUEUE_SIZE / 4 + CONFIG_ASYNC_TCP_QUEUE_SIZE * 3 / 4)) {
+    if (_async_queue.size() > (esp_random() % CONFIG_ASYNC_TCP_QUEUE_SIZE / 4 + CONFIG_ASYNC_TCP_QUEUE_SIZE * 3 / 4)) {
       _free_event(e);
       async_tcp_log_d("discarding poll due to queue congestion");
       continue;
@@ -431,7 +435,7 @@ int8_t AsyncTCP_detail::tcp_poll(void *arg, struct tcp_pcb *pcb) {
   {
     queue_mutex_guard guard;
     // async_tcp_log_d("qs:%u", _async_queue.size());
-    if (_async_queue.size() > (_xor_shift_next() % CONFIG_ASYNC_TCP_QUEUE_SIZE / 2 + CONFIG_ASYNC_TCP_QUEUE_SIZE / 4)) {
+    if (_async_queue.size() > (esp_random() % CONFIG_ASYNC_TCP_QUEUE_SIZE / 2 + CONFIG_ASYNC_TCP_QUEUE_SIZE / 4)) {
       async_tcp_log_d("throttling");
       return ERR_OK;
     }
