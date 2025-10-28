@@ -31,7 +31,7 @@ void makeRequest() {
 
   client->onError([](void *arg, AsyncClient *client, int8_t error) {
     Serial.printf("** error occurred %s \n", client->errorToString(error));
-    client->close();
+    client->close(true);
     delete client;
   });
 
@@ -41,7 +41,7 @@ void makeRequest() {
 
     client->onDisconnect([](void *arg, AsyncClient *client) {
       Serial.printf("** client has been disconnected: %" PRIu16 "\n", client->localPort());
-      client->close();
+      client->close(true);
       delete client;
 
       permits++;

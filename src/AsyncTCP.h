@@ -99,26 +99,16 @@ public:
 #endif
 #endif
   bool connect(const char *host, uint16_t port);
-
   /**
      * @brief close connection
      *
      * @param now - ignored
      */
-  [[deprecated("Use AsyncClient::close() instead")]]
-  void close(bool now) {
-    close();
-  }
-  [[deprecated("Use AsyncClient::close() instead")]]
+  void close(bool now = false);
+  // same as close()
   void stop() {
-    close();
+    close(false);
   };
-
-  /**
-     * @brief close connection
-     */
-  void close();
-
   int8_t abort();
   bool free();
 
