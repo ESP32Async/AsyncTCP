@@ -921,7 +921,7 @@ bool AsyncClient::connect(const char *host, uint16_t port) {
   return false;
 }
 
-void AsyncClient::close(bool now) {
+void AsyncClient::close() {
   if (_pcb) {
     _tcp_recved(&_pcb, _rx_ack_len);
   }
