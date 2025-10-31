@@ -65,7 +65,7 @@ extern "C" {
 
 // https://github.com/espressif/arduino-esp32/issues/10526
 namespace {
-#ifdef CONFIG_LWIP_TCPIP_CORE_LOCKING
+#if defined CONFIG_LWIP_TCPIP_CORE_LOCKING && CONFIG_LWIP_TCPIP_CORE_LOCKING
 struct tcp_core_guard {
   bool do_lock;
   inline tcp_core_guard() : do_lock(!sys_thread_tcpip(LWIP_CORE_LOCK_QUERY_HOLDER)) {
@@ -390,8 +390,7 @@ static bool _start_async_task() {
 
 /*
  * LwIP Callbacks
- * */
-
+ */
 static void _bind_tcp_callbacks(tcp_pcb *pcb, AsyncClient *client) {
   tcp_arg(pcb, client);
   tcp_recv(pcb, &AsyncTCP_detail::tcp_recv);
@@ -537,8 +536,7 @@ static void _tcp_dns_found(const char *name, ip_addr_t *ipaddr, void *arg) {
 
 /*
  * TCP/IP API Calls
- * */
-
+ */
 #include "lwip/priv/tcpip_priv.h"
 
 typedef struct {
@@ -566,7 +564,8 @@ typedef struct {
   };
 } tcp_api_call_t;
 
-static err_t _tcp_output_api(struct tcpip_api_call_data *api_call_msg) {
+// context switching callback
+[[maybe_unused]] static err_t _tcp_output_api(struct tcpip_api_call_data *api_call_msg) {
   tcp_api_call_t *msg = (tcp_api_call_t *)api_call_msg;
   msg->err = ERR_CONN;
   if (*msg->pcb) {
@@ -575,17 +574,23 @@ static err_t _tcp_output_api(struct tcpip_api_call_data *api_call_msg) {
   return msg->err;
 }
 
-static esp_err_t _tcp_output(tcp_pcb **pcb) {
+inline esp_err_t _tcp_output(tcp_pcb **pcb) {
   if (!pcb || !*pcb) {
     return ERR_CONN;
   }
+#if defined CONFIG_LWIP_TCPIP_CORE_LOCKING && CONFIG_LWIP_TCPIP_CORE_LOCKING
+  tcp_core_guard tcg;
+  return tcp_output(*pcb);
+#else   // CONFIG_LWIP_TCPIP_CORE_LOCKING
   tcp_api_call_t msg;
   msg.pcb = pcb;
   tcpip_api_call(_tcp_output_api, (struct tcpip_api_call_data *)&msg);
   return msg.err;
+#endif  // CONFIG_LWIP_TCPIP_CORE_LOCKING
 }
 
-static err_t _tcp_write_api(struct tcpip_api_call_data *api_call_msg) {
+// context switching callback
+[[maybe_unused]] static err_t _tcp_write_api(struct tcpip_api_call_data *api_call_msg) {
   tcp_api_call_t *msg = (tcp_api_call_t *)api_call_msg;
   msg->err = ERR_CONN;
   if (*msg->pcb) {
@@ -594,10 +599,15 @@ static err_t _tcp_write_api(struct tcpip_api_call_data *api_call_msg) {
   return msg->err;
 }
 
-static esp_err_t _tcp_write(tcp_pcb **pcb, const char *data, size_t size, uint8_t apiflags) {
+
+inline esp_err_t _tcp_write(tcp_pcb **pcb, const char *data, size_t size, uint8_t apiflags) {
   if (!pcb || !*pcb) {
     return ERR_CONN;
   }
+#if defined CONFIG_LWIP_TCPIP_CORE_LOCKING && CONFIG_LWIP_TCPIP_CORE_LOCKING
+  tcp_core_guard tcg;
+  return tcp_write(*pcb, data, size, apiflags);
+#else   // CONFIG_LWIP_TCPIP_CORE_LOCKING
   tcp_api_call_t msg;
   msg.pcb = pcb;
   msg.write.data = data;
@@ -605,9 +615,11 @@ static esp_err_t _tcp_write(tcp_pcb **pcb, const char *data, size_t size, uint8_
   msg.write.apiflags = apiflags;
   tcpip_api_call(_tcp_write_api, (struct tcpip_api_call_data *)&msg);
   return msg.err;
+#endif  // CONFIG_LWIP_TCPIP_CORE_LOCKING
 }
 
-static err_t _tcp_recved_api(struct tcpip_api_call_data *api_call_msg) {
+// context switching callback
+[[maybe_unused]] static err_t _tcp_recved_api(struct tcpip_api_call_data *api_call_msg) {
   tcp_api_call_t *msg = (tcp_api_call_t *)api_call_msg;
   msg->err = ERR_CONN;
   if (*msg->pcb) {
@@ -617,15 +629,22 @@ static err_t _tcp_recved_api(struct tcpip_api_call_data *api_call_msg) {
   return msg->err;
 }
 
-static esp_err_t _tcp_recved(tcp_pcb **pcb, size_t len) {
+
+inline esp_err_t _tcp_recved(tcp_pcb **pcb, size_t len) {
   if (!pcb || !*pcb) {
     return ERR_CONN;
   }
+#if defined CONFIG_LWIP_TCPIP_CORE_LOCKING && CONFIG_LWIP_TCPIP_CORE_LOCKING
+  tcp_core_guard tcg;
+  tcp_recved(*pcb, len);
+  return ERR_OK;
+#else   // CONFIG_LWIP_TCPIP_CORE_LOCKING
   tcp_api_call_t msg;
   msg.pcb = pcb;
   msg.received = len;
   tcpip_api_call(_tcp_recved_api, (struct tcpip_api_call_data *)&msg);
   return msg.err;
+#endif  // CONFIG_LWIP_TCPIP_CORE_LOCKING
 }
 
 static err_t _tcp_close_api(struct tcpip_api_call_data *api_call_msg) {
@@ -645,6 +664,7 @@ static err_t _tcp_close_api(struct tcpip_api_call_data *api_call_msg) {
     if (tcp_close(pcb) != ERR_OK) {
       // We do not permit failure here: abandon the pcb anyways.
       tcp_abort(pcb);
+      msg->err = ERR_ABRT;    // if we called tcp_abort here, then we must return ERR_ABRT
     }
     msg->err = ERR_OK;
     *msg->pcb = nullptr;  // PCB is now the property of LwIP
@@ -657,18 +677,38 @@ static err_t _tcp_close_api(struct tcpip_api_call_data *api_call_msg) {
   return msg->err;
 }
 
-static esp_err_t _tcp_close(tcp_pcb **pcb, AsyncClient *client) {
+inline esp_err_t _tcp_close(tcp_pcb **pcb, AsyncClient *client) {
+#if defined CONFIG_LWIP_TCPIP_CORE_LOCKING && CONFIG_LWIP_TCPIP_CORE_LOCKING
+if (pcb && *pcb) {
+  esp_err_t err{ERR_OK};
+  tcp_core_guard tcg;
+  _reset_tcp_callbacks(*pcb, client);
+  if (tcp_close(*pcb) != ERR_OK) {
+    // We do not permit failure here: abandon the pcb anyways.
+    tcp_abort(*pcb);
+    err = ERR_ABRT;   // if we called tcp_abort here, then we must return ERR_ABRT
+  }
+  *pcb = nullptr;     // PCB is now the property of LwIP
+  return err;
+} else {
+  // Ensure there is not an error event queued for this client
+  return _remove_events_for_client(client) ? ERR_OK : ERR_CONN;
+}
+#else   // CONFIG_LWIP_TCPIP_CORE_LOCKING
   tcp_api_call_t msg;
   msg.pcb = pcb;
   msg.close = client;
   tcpip_api_call(_tcp_close_api, (struct tcpip_api_call_data *)&msg);
   return msg.err;
+#endif  // CONFIG_LWIP_TCPIP_CORE_LOCKING
 }
 
-static err_t _tcp_abort_api(struct tcpip_api_call_data *api_call_msg) {
-  // Like close(), we must ensure that the queue is cleared
+// context switching callback
+[[maybe_unused]] static err_t _tcp_abort_api(struct tcpip_api_call_data *api_call_msg) {
   tcp_api_call_t *msg = (tcp_api_call_t *)api_call_msg;
   if (*msg->pcb) {
+    // Like close(), we must ensure that the queue is cleared
+    _reset_tcp_callbacks(*(msg->pcb), msg->close);
     tcp_abort(*msg->pcb);
     *msg->pcb = nullptr;  // PCB is now the property of LwIP
     msg->err = ERR_ABRT;
@@ -678,27 +718,43 @@ static err_t _tcp_abort_api(struct tcpip_api_call_data *api_call_msg) {
   return msg->err;
 }
 
-static esp_err_t _tcp_abort(tcp_pcb **pcb, AsyncClient *client) {
+
+inline esp_err_t _tcp_abort(tcp_pcb **pcb, AsyncClient *client) {
   if (!pcb || !*pcb) {
     return ERR_CONN;
   }
+#if defined CONFIG_LWIP_TCPIP_CORE_LOCKING && CONFIG_LWIP_TCPIP_CORE_LOCKING
+  tcp_core_guard tcg;
+  // Like close(), we must ensure that the queue is cleared
+  _reset_tcp_callbacks(*pcb, client);
+  tcp_abort(*pcb);
+  *pcb = nullptr;  // PCB is now the property of LwIP
+  return ERR_ABRT;
+#else   // CONFIG_LWIP_TCPIP_CORE_LOCKING
   tcp_api_call_t msg;
   msg.pcb = pcb;
   msg.close = client;
   tcpip_api_call(_tcp_abort_api, (struct tcpip_api_call_data *)&msg);
   return msg.err;
+#endif  // CONFIG_LWIP_TCPIP_CORE_LOCKING
 }
 
-static err_t _tcp_connect_api(struct tcpip_api_call_data *api_call_msg) {
+// context switching callback
+[[maybe_unused]] static err_t _tcp_connect_api(struct tcpip_api_call_data *api_call_msg) {
   tcp_api_call_t *msg = (tcp_api_call_t *)api_call_msg;
   msg->err = tcp_connect(*msg->pcb, msg->connect.addr, msg->connect.port, msg->connect.cb);
   return msg->err;
 }
 
-static esp_err_t _tcp_connect(tcp_pcb *pcb, ip_addr_t *addr, uint16_t port, tcp_connected_fn cb) {
+
+inline esp_err_t _tcp_connect(tcp_pcb *pcb, ip_addr_t *addr, uint16_t port, tcp_connected_fn cb) {
   if (!pcb) {
     return ESP_FAIL;
   }
+#if defined CONFIG_LWIP_TCPIP_CORE_LOCKING && CONFIG_LWIP_TCPIP_CORE_LOCKING
+  tcp_core_guard tcg;
+  return tcp_connect(pcb, addr, port, cb);
+#else   // CONFIG_LWIP_TCPIP_CORE_LOCKING
   tcp_api_call_t msg;
   msg.pcb = &pcb;  // cannot be invalidated by LwIP at this point
   msg.connect.addr = addr;
@@ -706,9 +762,11 @@ static esp_err_t _tcp_connect(tcp_pcb *pcb, ip_addr_t *addr, uint16_t port, tcp_
   msg.connect.cb = cb;
   tcpip_api_call(_tcp_connect_api, (struct tcpip_api_call_data *)&msg);
   return msg.err;
+#endif  // CONFIG_LWIP_TCPIP_CORE_LOCKING
 }
 
-static err_t _tcp_bind_api(struct tcpip_api_call_data *api_call_msg) {
+// context switching callback
+[[maybe_unused]] static err_t _tcp_bind_api(struct tcpip_api_call_data *api_call_msg) {
   tcp_api_call_t *msg = (tcp_api_call_t *)api_call_msg;
   tcp_pcb *pcb = *msg->pcb;
   msg->err = tcp_bind(pcb, msg->bind.addr, msg->bind.port);
@@ -716,40 +774,62 @@ static err_t _tcp_bind_api(struct tcpip_api_call_data *api_call_msg) {
     // Close the pcb on behalf of the server without an extra round-trip through the LwIP lock
     if (tcp_close(pcb) != ERR_OK) {
       tcp_abort(pcb);
+      msg->err = ERR_ABRT;   // if we called tcp_abort here, then we must return ERR_ABRT
     }
     *msg->pcb = nullptr;  // PCB is now owned by LwIP
   }
   return msg->err;
 }
 
-static esp_err_t _tcp_bind(tcp_pcb **pcb, ip_addr_t *addr, uint16_t port) {
+inline esp_err_t _tcp_bind(tcp_pcb **pcb, ip_addr_t *addr, uint16_t port) {
   if (!pcb || !*pcb) {
     return ESP_FAIL;
   }
+#if defined CONFIG_LWIP_TCPIP_CORE_LOCKING && CONFIG_LWIP_TCPIP_CORE_LOCKING
+  tcp_core_guard tcg;
+  auto err = tcp_bind(*pcb, addr, port);
+  if (err != ERR_OK) {
+    // Close the pcb on behalf of the server without an extra round-trip through the LwIP lock
+    if (tcp_close(*pcb) != ERR_OK) {
+      tcp_abort(*pcb);
+      err = ERR_ABRT;   // if we called tcp_abort here, then we must return ERR_ABRT
+    }
+    *pcb = nullptr;  // PCB is now owned by LwIP
+  }
+  return err;
+#else   // CONFIG_LWIP_TCPIP_CORE_LOCKING
   tcp_api_call_t msg;
   msg.pcb = pcb;
   msg.bind.addr = addr;
   msg.bind.port = port;
   tcpip_api_call(_tcp_bind_api, (struct tcpip_api_call_data *)&msg);
   return msg.err;
+#endif  // CONFIG_LWIP_TCPIP_CORE_LOCKING
 }
 
-static err_t _tcp_listen_api(struct tcpip_api_call_data *api_call_msg) {
+// context switching callback
+[[maybe_unused]] static err_t _tcp_listen_api(struct tcpip_api_call_data *api_call_msg) {
   tcp_api_call_t *msg = (tcp_api_call_t *)api_call_msg;
   msg->err = 0;
   *msg->pcb = tcp_listen_with_backlog(*msg->pcb, msg->backlog);
   return msg->err;
 }
 
+
 static tcp_pcb *_tcp_listen_with_backlog(tcp_pcb *pcb, uint8_t backlog) {
   if (!pcb) {
     return NULL;
   }
+#if defined CONFIG_LWIP_TCPIP_CORE_LOCKING && CONFIG_LWIP_TCPIP_CORE_LOCKING
+  tcp_core_guard tcg;
+  return tcp_listen_with_backlog(pcb, backlog ? backlog : 0xFF);
+#else   // CONFIG_LWIP_TCPIP_CORE_LOCKING
   tcp_api_call_t msg;
   msg.pcb = &pcb;
   msg.backlog = backlog ? backlog : 0xFF;
   tcpip_api_call(_tcp_listen_api, (struct tcpip_api_call_data *)&msg);
   return pcb;
+#endif  // CONFIG_LWIP_TCPIP_CORE_LOCKING
 }
 
 /*
