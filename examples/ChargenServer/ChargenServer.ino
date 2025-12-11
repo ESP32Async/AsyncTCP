@@ -36,10 +36,9 @@ const size_t LINE_LENGTH = 72;
 const char CHARGEN_PATTERN_FULL[] = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
 const size_t PATTERN_LENGTH_FULL = 95;
 
-#define WIFI_SSID     "Your_SSID"
-#define WIFI_PASSWORD "Your_PASSWORD"
+#define WIFI_SSID     "WiFi_Pelicano"
+#define WIFI_PASSWORD "AcDhDdg7smBLgnUtfcV5t"
 
-// --- Global state for a SINGLE client ---
 // This is the main asynchronous server object
 AsyncServer* AsyncServerChargen = nullptr;
 // This is the pointer to the single connected client
@@ -47,15 +46,14 @@ AsyncClient* AsyncClientChargen= nullptr;
 // This is the pointer to the stream of data.
 size_t startIndex = 0;
 
-
-void makeAndSendLine();      // Forward declaration
+void makeAndSendLine(); // Forward declaration
 
 // --- Callback Functions ---
 
 // Called when the client acknowledges receiving data. We use this to send more.
 void handleClientAck(void* arg, AsyncClient* client, size_t len, uint32_t time) {
-    if (!client->disconnected() && client->space() > (LINE_LENGTH + 2)) {
-        makeAndSendLine(); // <--- ¡Aquí está la cadena!
+    if (!client->disconnected() && client->space() >= (LINE_LENGTH + 2)) {
+        makeAndSendLine();
     }
 }
 
@@ -64,14 +62,34 @@ void handleClientAck(void* arg, AsyncClient* client, size_t len, uint32_t time) 
 void handleClientPoll(void* arg, AsyncClient* client) {
     // We can reuse the same logic as the ACK handler.
     // Just try to send more data if there's space.
-    handleClientAck(arg, client, 0, 0);
+    handleClientAck(arg, client, 0, 0); // Original call
+}
+
+// It handles errors that are not normal disconnections.
+void handleClientError(void* arg, AsyncClient* client, int error) {
+    // The error codes are defined in esp_err.h
+    Serial.printf("Client error! Code: %d, Message: %s\n", error, client->errorToString(error));
+
+    // If the client is the one we have stored, clean it up.
+    if (AsyncClientChargen == client) {
+        Serial.println("Cleaning up global client pointer due to error.");
+        AsyncClientChargen = nullptr;
+    }
+    // We do not need to call "delete client" here because onDisconnect will do it
+    // If the error is critical we will do it.
+    if (client->connected()) {
+        client->close();
+    }
 }
 
 // Called when the client disconnects.
 void handleClientDisconnect(void* arg, AsyncClient* client) {
     Serial.println("Client disconnected.");
     // Set the global client pointer to null to allow a new client to connect.
-    AsyncClientChargen = nullptr;
+    if (AsyncClientChargen == client) {
+        AsyncClientChargen = nullptr;
+    }
+    delete client;
 }
 
 // Called when a new client tries to connect.
@@ -88,10 +106,20 @@ void handleClient(void* arg, AsyncClient* client) {
     AsyncClientChargen = client;
     startIndex = 0; // Reset pattern for the new client.
 
-    // Set up callbacks for the new client.
+    // Called when previously sent data is acknowledged by the client. 
+    // This is the core engine for continuous data transmission (Chargen).
     AsyncClientChargen->onAck(handleClientAck, nullptr);
-    // onPoll is a good backup to send data if the buffer was full.
+
+    // Called periodically by the AsyncTCP task. 
+    // Serves as a backup to resume transmission if the buffer was full and the ACK wasn't received.
     AsyncClientChargen->onPoll(handleClientPoll, nullptr);
+
+    // Called when a communication error (e.g., protocol failure or timeout) occurs.
+    // Essential for cleaning up the global client pointer and preventing resource leaks.
+    AsyncClientChargen->onError(handleClientError, nullptr);
+
+    // Called when the client actively closes the connection or if a fatal error occurs.
+    // Responsible for resetting the global client pointer and freeing memory.
     AsyncClientChargen->onDisconnect(handleClientDisconnect, nullptr);
 
     // Start sending data immediately.
