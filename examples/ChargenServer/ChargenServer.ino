@@ -2,7 +2,7 @@
 // Copyright 2025 Hristo Gochkov, Mathieu Carbou, Emil Muratov, Jorge Novo
 
 /*
-  This example demonstrates how to cretate a TCP Chargen server with the 
+  This example demonstrates how to create a TCP Chargen server with the 
   AsyncTCP library. Run on the remote computer:
   
     $ nc <IPAddressforESP32> 19
@@ -36,14 +36,14 @@ const size_t LINE_LENGTH = 72;
 const char CHARGEN_PATTERN_FULL[] = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
 const size_t PATTERN_LENGTH_FULL = 95;
 
-#define WIFI_SSID     "WiFi_Pelicano"
-#define WIFI_PASSWORD "AcDhDdg7smBLgnUtfcV5t"
+#define WIFI_SSID     "YourSSID"
+#define WIFI_PASSWORD "YourPassword"
 
 // This is the main asynchronous server object
 AsyncServer* AsyncServerChargen = nullptr;
 // This is the pointer to the single connected client
-AsyncClient* AsyncClientChargen= nullptr;
-// This is the pointer to the stream of data.
+AsyncClient* AsyncClientChargen = nullptr;
+// Tracks the current position in the pattern rotation for the Chargen protocol.
 size_t startIndex = 0;
 
 void makeAndSendLine(); // Forward declaration
@@ -75,8 +75,8 @@ void handleClientError(void* arg, AsyncClient* client, int error) {
         Serial.println("Cleaning up global client pointer due to error.");
         AsyncClientChargen = nullptr;
     }
-    // We do not need to call "delete client" here because onDisconnect will do it
-    // If the error is critical we will do it.
+    // We do not need to call "delete client" here because onDisconnect will do it.
+    // If the error is critical, we will do it.
     if (client->connected()) {
         client->close();
     }
