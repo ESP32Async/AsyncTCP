@@ -2,7 +2,7 @@
 // Copyright 2025 Hristo Gochkov, Mathieu Carbou, Emil Muratov, Jorge Novo
 
 /*
-  This example demonstrates how to cretate a TCP Chargen server with the 
+  This example demonstrates how to create a TCP Chargen server with the 
   AsyncTCP library. Run on the remote computer:
   
     $ nc <IPAddressforESP32> 19
