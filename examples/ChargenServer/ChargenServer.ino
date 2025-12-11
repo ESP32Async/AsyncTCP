@@ -75,8 +75,8 @@ void handleClientError(void* arg, AsyncClient* client, int error) {
         Serial.println("Cleaning up global client pointer due to error.");
         AsyncClientChargen = nullptr;
     }
-    // We do not need to call "delete client" here because onDisconnect will do it.
-    // If the error is critical, we will do it.
+    // We do not need to call "delete client" here because onDisconnect will do it
+    // If the error is critical we will do it.
     if (client->connected()) {
         client->close();
     }
