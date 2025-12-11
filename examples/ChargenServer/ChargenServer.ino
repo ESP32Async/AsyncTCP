@@ -58,11 +58,10 @@ void handleClientAck(void* arg, AsyncClient* client, size_t len, uint32_t time) 
 }
 
 // Called periodically while the client is connected.
-// This function has the correct signature for onPoll: void(void*, AsyncClient*).
 void handleClientPoll(void* arg, AsyncClient* client) {
     // We can reuse the same logic as the ACK handler.
     // Just try to send more data if there's space.
-    handleClientAck(arg, client, 0, 0); // Original call
+    handleClientAck(arg, client, 0, 0);
 }
 
 // It handles errors that are not normal disconnections.
@@ -75,8 +74,8 @@ void handleClientError(void* arg, AsyncClient* client, int error) {
         Serial.println("Cleaning up global client pointer due to error.");
         AsyncClientChargen = nullptr;
     }
-    // We do not need to call "delete client" here because onDisconnect will do it
-    // If the error is critical we will do it.
+    // We do not need to call "delete client" here because onDisconnect will do it.
+    // If the error is critical, we will do it.
     if (client->connected()) {
         client->close();
     }
