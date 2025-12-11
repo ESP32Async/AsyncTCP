@@ -43,7 +43,7 @@ const size_t PATTERN_LENGTH_FULL = 95;
 // This is the main asynchronous server object
 AsyncServer* AsyncServerChargen = nullptr;
 // This is the pointer to the single connected client
-AsyncClient* AsyncClientChargen= nullptr;
+AsyncClient* AsyncClientChargen = nullptr;
 // This is the pointer to the stream of data.
 size_t startIndex = 0;
 
