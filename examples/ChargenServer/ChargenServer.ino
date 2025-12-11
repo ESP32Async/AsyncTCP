@@ -44,7 +44,7 @@ const size_t PATTERN_LENGTH_FULL = 95;
 AsyncServer* AsyncServerChargen = nullptr;
 // This is the pointer to the single connected client
 AsyncClient* AsyncClientChargen = nullptr;
-// This is the pointer to the stream of data.
+// Tracks the current position in the pattern rotation for the Chargen protocol.
 size_t startIndex = 0;
 
 
