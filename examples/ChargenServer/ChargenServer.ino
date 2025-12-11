@@ -54,7 +54,7 @@ void makeAndSendLine();      // Forward declaration
 
 // Called when the client acknowledges receiving data. We use this to send more.
 void handleClientAck(void* arg, AsyncClient* client, size_t len, uint32_t time) {
-    if (!client->disconnected() && client->space() > (LINE_LENGTH + 2)) {
+    if (!client->disconnected() && client->space() >= (LINE_LENGTH + 2)) {
         makeAndSendLine(); // <--- ¡Aquí está la cadena!
     }
 }
