@@ -12,7 +12,7 @@ extern "C" {
 /** Minor version number (x.X.x) */
 #define ASYNCTCP_VERSION_MINOR 4
 /** Patch version number (x.x.X) */
-#define ASYNCTCP_VERSION_PATCH 9
+#define ASYNCTCP_VERSION_PATCH 10
 
 /**
  * Macro to convert version number into an integer
