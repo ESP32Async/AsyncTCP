@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright 2016-2025 Hristo Gochkov, Mathieu Carbou, Emil Muratov
+// Copyright 2016-2026 Hristo Gochkov, Mathieu Carbou, Emil Muratov, Will Miles
 
 #pragma once
 
@@ -12,7 +12,7 @@ extern "C" {
 /** Minor version number (x.X.x) */
 #define ASYNCTCP_VERSION_MINOR 4
 /** Patch version number (x.x.X) */
-#define ASYNCTCP_VERSION_PATCH 9
+#define ASYNCTCP_VERSION_PATCH 10
 
 /**
  * Macro to convert version number into an integer

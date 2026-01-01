@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright 2016-2025 Hristo Gochkov, Mathieu Carbou, Emil Muratov
+// Copyright 2016-2026 Hristo Gochkov, Mathieu Carbou, Emil Muratov, Will Miles
 
 #include "AsyncTCP.h"
 #include "AsyncTCPLogging.h"
@@ -468,8 +468,6 @@ int8_t AsyncTCP_detail::tcp_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *pb
     e->event = LWIP_TCP_FIN;
     e->fin.pcb = pcb;
     e->fin.err = err;
-    // close the PCB in LwIP thread
-    client->_lwip_fin(e->fin.pcb, e->fin.err);
   }
 
   queue_mutex_guard guard;
@@ -1043,9 +1041,7 @@ int8_t AsyncClient::_lwip_fin(tcp_pcb *pcb, int8_t err) {
 
 // In Async Thread
 int8_t AsyncClient::_fin(tcp_pcb *pcb, int8_t err) {
-  if (_discard_cb) {
-    _discard_cb(_discard_cb_arg, this);
-  }
+  close();
   return ERR_OK;
 }
 
