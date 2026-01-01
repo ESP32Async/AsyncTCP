@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright 2025 Hristo Gochkov, Mathieu Carbou, Emil Muratov, Jorge Novo
+// Copyright 2016-2026 Hristo Gochkov, Mathieu Carbou, Emil Muratov, Will Miles
 
 /*
   This example demonstrates how to create a TCP Chargen server with the
