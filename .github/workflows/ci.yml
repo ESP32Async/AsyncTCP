@@ -21,7 +21,7 @@ jobs:
       matrix:
         config: [arduino-cli.yaml, arduino-cli-dev.yaml]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: arduino/setup-arduino-cli@v1
       - name: Download board
         run: |
@@ -89,10 +89,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Cache PlatformIO
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           key: ${{ runner.os }}-pio
           path: |
@@ -138,7 +138,7 @@ jobs:
     container: espressif/idf:${{ matrix.idf_ver }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           path: components/asynctcp
 
