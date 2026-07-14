@@ -667,6 +667,12 @@ static err_t _tcp_abort_api(struct tcpip_api_call_data *api_call_msg) {
   // Like close(), we must ensure that the queue is cleared
   tcp_api_call_t *msg = (tcp_api_call_t *)api_call_msg;
   if (*msg->pcb) {
+    // Null the pcb callbacks first so lwIP cannot deliver any further event
+    // for this connection, then drop any already-queued events referencing
+    // this client.  Without this, a LWIP_TCP_ERROR / LWIP_TCP_RECV event
+    // already in the async queue would fire _error()/_recv() on a half-torn
+    // down (or deleted) client.  Mirrors _tcp_close_api().
+    _reset_tcp_callbacks(*msg->pcb, msg->close);
     tcp_abort(*msg->pcb);
     *msg->pcb = nullptr;  // PCB is now the property of LwIP
     msg->err = ERR_ABRT;
@@ -927,8 +933,21 @@ void AsyncClient::close() {
 }
 
 int8_t AsyncClient::abort() {
-  return _tcp_abort(&_pcb, this);
-  // _pcb is now NULL
+  int8_t err = _tcp_abort(&_pcb, this);
+  // Fire the onDisconnect (_discard_cb) callback so that
+  // owners (AsyncWebServerRequest, AsyncWebSocketClient, EventSource, ...)
+  // can run their _onDisconnect -> delete-self cleanup.  Without this, every
+  // abort() in the higher layers leaks the connection object permanently,
+  // because their lifetime is managed solely by onDisconnect and they keep
+  // no reaper list.  _close() does the same; abort() previously did not.
+  //
+  // err is captured in a local because _discard_cb may delete *this
+  // (synchronously, via _onDisconnect -> ~owner -> delete _client -> ~AsyncClient),
+  // so we must not touch any member after the callback.  Mirrors _close().
+  if ((err == ERR_ABRT) && _discard_cb) {
+    _discard_cb(_discard_cb_arg, this);
+  }
+  return err;
 }
 
 size_t AsyncClient::space() const {
