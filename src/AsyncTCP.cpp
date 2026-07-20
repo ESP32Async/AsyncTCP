@@ -38,6 +38,9 @@
 static unsigned long millis() {
   return (unsigned long)(esp_timer_get_time() / 1000ULL);
 }
+static unsigned long micros() {
+  return static_cast<unsigned long>(esp_timer_get_time());
+}
 #endif  // !LIBRETINY && !ARDUINO
 
 extern "C" {
@@ -62,6 +65,14 @@ extern "C" {
 #else
 #define ASYNC_TCP_MAX_TASK_SLEEP portMAX_DELAY
 #endif
+
+#define async_tcp_log_elapsed(tag, statement)                          \
+  {                                                                    \
+    [[maybe_unused]]                                                   \
+    const uint32_t s_time = micros();                                  \
+    statement;                                                         \
+    async_tcp_log_v("%s took %" PRIu32 " us", tag, micros() - s_time); \
+  }
 
 // https://github.com/espressif/arduino-esp32/issues/10526
 namespace {
@@ -318,6 +329,7 @@ void AsyncTCP_detail::handle_async_event(lwip_tcp_event_packet_t *e) {
 }
 
 static void _async_service_task(void *pvParameters) {
+  async_tcp_log_d("Task 'async_tcp' started on core %d", static_cast<int>(xPortGetCoreID()));
 #if CONFIG_ASYNC_TCP_USE_WDT
   if (esp_task_wdt_add(NULL) != ESP_OK) {
     async_tcp_log_w("Failed to add async task to WDT");
@@ -325,7 +337,7 @@ static void _async_service_task(void *pvParameters) {
 #endif
   for (;;) {
     while (auto packet = _get_async_event()) {
-      AsyncTCP_detail::handle_async_event(packet);
+      async_tcp_log_elapsed("handle_async_event", AsyncTCP_detail::handle_async_event(packet));
 #if CONFIG_ASYNC_TCP_USE_WDT
       esp_task_wdt_reset();
 #endif
@@ -994,7 +1006,7 @@ int8_t AsyncClient::_close() {
   // _pcb is now NULL
   if ((err == ERR_OK) && _discard_cb) {
     // _pcb was closed here
-    _discard_cb(_discard_cb_arg, this);
+    async_tcp_log_elapsed("onDisconnect", _discard_cb(_discard_cb_arg, this));
   }
   return err;
 }
@@ -1011,17 +1023,17 @@ int8_t AsyncClient::_connected(tcp_pcb *pcb, int8_t err) {
   _tx_last_packet = 0;
   _rx_last_ack = 0;
   if (_connect_cb) {
-    _connect_cb(_connect_cb_arg, this);
+    async_tcp_log_elapsed("onConnect", _connect_cb(_connect_cb_arg, this));
   }
   return ERR_OK;
 }
 
 void AsyncClient::_error(int8_t err) {
   if (_error_cb) {
-    _error_cb(_error_cb_arg, this, err);
+    async_tcp_log_elapsed("onError", _error_cb(_error_cb_arg, this, err));
   }
   if (_discard_cb) {
-    _discard_cb(_discard_cb_arg, this);
+    async_tcp_log_elapsed("onDisconnect", _discard_cb(_discard_cb_arg, this));
   }
 }
 
@@ -1048,7 +1060,7 @@ int8_t AsyncClient::_fin(tcp_pcb *pcb, int8_t err) {
 int8_t AsyncClient::_sent(tcp_pcb *pcb, uint16_t len) {
   _rx_last_ack = _rx_last_packet = millis();
   if (_sent_cb) {
-    _sent_cb(_sent_cb_arg, this, len, (_rx_last_packet - _tx_last_packet));
+    async_tcp_log_elapsed("onAck", _sent_cb(_sent_cb_arg, this, len, (_rx_last_packet - _tx_last_packet)));
   }
   return ERR_OK;
 }
@@ -1062,10 +1074,10 @@ int8_t AsyncClient::_recv(tcp_pcb *pcb, pbuf *pb, int8_t err) {
     pb = b->next;
     b->next = NULL;
     if (_pb_cb) {
-      _pb_cb(_pb_cb_arg, this, b);
+      async_tcp_log_elapsed("onPacket", _pb_cb(_pb_cb_arg, this, b));
     } else {
       if (_recv_cb) {
-        _recv_cb(_recv_cb_arg, this, b->payload, b->len);
+        async_tcp_log_elapsed("onData", _recv_cb(_recv_cb_arg, this, b->payload, b->len));
       }
       if (!_ack_pcb) {
         _rx_ack_len += b->len;
@@ -1097,7 +1109,7 @@ int8_t AsyncClient::_poll(tcp_pcb *pcb) {
     if (last_tx_is_after_last_ack && (now - _tx_last_packet) >= _ack_timeout) {
       async_tcp_log_d("ack timeout %d", pcb->state);
       if (_timeout_cb) {
-        _timeout_cb(_timeout_cb_arg, this, (now - _tx_last_packet));
+        async_tcp_log_elapsed("onTimeout", _timeout_cb(_timeout_cb_arg, this, (now - _tx_last_packet)));
       }
       return ERR_OK;
     }
@@ -1110,7 +1122,7 @@ int8_t AsyncClient::_poll(tcp_pcb *pcb) {
   }
   // Everything is fine
   if (_poll_cb) {
-    _poll_cb(_poll_cb_arg, this);
+    async_tcp_log_elapsed("onPoll", _poll_cb(_poll_cb_arg, this));
   }
   return ERR_OK;
 }
@@ -1120,10 +1132,10 @@ void AsyncClient::_dns_found(ip_addr_t *ipaddr) {
     connect(*ipaddr, _connect_port);
   } else {
     if (_error_cb) {
-      _error_cb(_error_cb_arg, this, -55);
+      async_tcp_log_elapsed("onError", _error_cb(_error_cb_arg, this, -55));
     }
     if (_discard_cb) {
-      _discard_cb(_discard_cb_arg, this);
+      async_tcp_log_elapsed("onDisconnect", _discard_cb(_discard_cb_arg, this));
     }
   }
 }
@@ -1587,7 +1599,7 @@ int8_t AsyncTCP_detail::tcp_accept(void *arg, tcp_pcb *pcb, int8_t err) {
 
 int8_t AsyncServer::_accepted(AsyncClient *client) {
   if (_connect_cb) {
-    _connect_cb(_connect_cb_arg, client);
+    async_tcp_log_elapsed("onClient", _connect_cb(_connect_cb_arg, client));
   }
   return ERR_OK;
 }
