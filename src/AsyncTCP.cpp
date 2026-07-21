@@ -676,14 +676,20 @@ static esp_err_t _tcp_close(tcp_pcb **pcb, AsyncClient *client) {
 }
 
 static err_t _tcp_abort_api(struct tcpip_api_call_data *api_call_msg) {
-  // Like close(), we must ensure that the queue is cleared
+  // Like close(), we must ensure that the queue is cleared of any events referencing the AsyncClient.
+  // ERR_ABRT: the pcb was aborted.
+  // ERR_OK:   the pcb was already gone, but a queued error event was purged, so the
+  //           caller must still run the discard callback (dispose needs to run).
+  // ERR_CONN: nothing to do (pcb already null and no queued events).
   tcp_api_call_t *msg = (tcp_api_call_t *)api_call_msg;
   if (*msg->pcb) {
+    _reset_tcp_callbacks(*msg->pcb, msg->close);
     tcp_abort(*msg->pcb);
     *msg->pcb = nullptr;  // PCB is now the property of LwIP
     msg->err = ERR_ABRT;
   } else {
-    msg->err = ERR_CONN;
+    // Ensure there is not an error event queued for this client
+    msg->err = _remove_events_for_client(msg->close) ? ERR_OK : ERR_CONN;
   }
   return msg->err;
 }
@@ -939,8 +945,15 @@ void AsyncClient::close() {
 }
 
 int8_t AsyncClient::abort() {
-  return _tcp_abort(&_pcb, this);
+  int8_t err = _tcp_abort(&_pcb, this);
   // _pcb is now NULL
+  // LwIP invokes the error callback when abort is issued; preserve this semantic.
+  // This will also trigger the dispose callback.
+  // If the pcb was previously invalidated by some other queued error, we've discarded that value; so we always send ERR_ABRT.
+  if (err != ERR_CONN) {
+    _error(ERR_ABRT);
+  }
+  return err;
 }
 
 size_t AsyncClient::space() const {
