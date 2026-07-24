@@ -71,17 +71,6 @@ jobs:
           - env: ci-arduino-3-esp-idf_log
             board: esp32dev
 
-          # - env: ci-arduino-rc
-          #   board: esp32dev
-          # - env: ci-arduino-rc
-          #   board: esp32-s2-saola-1
-          # - env: ci-arduino-rc
-          #   board: esp32-s3-devkitc-1
-          # - env: ci-arduino-rc
-          #   board: esp32-c3-devkitc-02
-          # - env: ci-arduino-rc
-          #   board: esp32-c6-devkitc-1
-
           - env: ci-arduino-libretiny
             board: generic-bk7231n-qfn32-tuya
           - env: ci-arduino-libretiny
