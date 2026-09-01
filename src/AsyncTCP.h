@@ -18,17 +18,21 @@
 #include "lwip/ip_addr.h"
 #include <functional>
 
-#ifndef LIBRETINY
+#if defined(ESP32)
 #include "sdkconfig.h"
 extern "C" {
 #include "freertos/semphr.h"
 #include "lwip/pbuf.h"
 }
-#else
+#elif defined(LIBRETINY)
 extern "C" {
 #include <lwip/pbuf.h>
 #include <FreeRTOS.h>
 #include <semphr.h>
+}
+#elif defined(ESP8266)
+extern "C" {
+#include "lwip/pbuf.h"
 }
 #endif
 
@@ -106,7 +110,7 @@ public:
      * @param now - ignored
      */
   [[deprecated("Use AsyncClient::close() instead")]]
-  void close(bool now) {
+  void close(bool now __attribute__((unused))) {
     close();
   }
   [[deprecated("Use AsyncClient::close() instead")]]

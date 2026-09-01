@@ -37,7 +37,11 @@ Buffer received - next send in 2 sec
 #include <Arduino.h>
 #include <AsyncTCP.h>
 #include <StreamString.h>
+#ifdef ESP8266
+#include <ESP8266WiFi.h>
+#else
 #include <WiFi.h>
+#endif
 #include <assert.h>
 
 #include <functional>
