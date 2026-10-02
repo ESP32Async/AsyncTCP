@@ -72,6 +72,7 @@ typedef std::function<void(void *, AsyncClient *, uint32_t time)> AcTimeoutHandl
 
 struct tcp_pcb;
 class AsyncTCP_detail;
+struct AsyncClientCallbackContext;
 
 class AsyncClient {
 public:
@@ -256,9 +257,7 @@ public:
   // ack data that you have not acked using the method below
   size_t ack(size_t len);
   // will not ack the current packet. Call from onData
-  void ackLater() {
-    _ack_pcb = false;
-  }
+  void ackLater();
 
   static const char *errorToString(int8_t error);
   const char *stateToString() const;
@@ -291,7 +290,7 @@ protected:
   AcConnectHandler _poll_cb;
   void *_poll_cb_arg;
 
-  bool _ack_pcb;
+  AsyncClientCallbackContext *_cb_ctx;
   uint32_t _tx_last_packet;
   uint32_t _rx_ack_len;
   uint32_t _rx_last_packet;
@@ -306,7 +305,6 @@ protected:
   int8_t _poll(tcp_pcb *pcb);
   int8_t _sent(tcp_pcb *pcb, uint16_t len);
   int8_t _fin(tcp_pcb *pcb, int8_t err);
-  int8_t _lwip_fin(tcp_pcb *pcb, int8_t err);
   void _dns_found(ip_addr_t *ipaddr);
 };
 

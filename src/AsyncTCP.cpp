@@ -52,10 +52,6 @@ extern "C" {
 #include "lwip/tcpip.h"
 }
 
-#if CONFIG_ASYNC_TCP_USE_WDT
-#include "esp_task_wdt.h"
-#endif
-
 // Required for:
 // https://github.com/espressif/arduino-esp32/blob/3.0.3/libraries/Network/src/NetworkInterface.cpp#L37-L47
 
@@ -107,6 +103,14 @@ struct tcp_core_guard {
   https://github.com/espressif/esp-lwip/blob/2acf959a2bb559313cd2bf9306c24612ba3d0e19/src/core/tcp.c#L1895
 */
 #define CONFIG_ASYNC_TCP_POLL_TIMER 1
+
+/* Callback context */
+struct AsyncClientCallbackContext {
+  AsyncClientCallbackContext *next = nullptr;
+  bool client_is_valid = true;
+  bool ack_later = false;
+  u16_t ack_len = 0;  // lwip's size_t
+};
 
 /*
  * TCP/IP Event Task
@@ -774,8 +778,8 @@ static tcp_pcb *_tcp_listen_with_backlog(tcp_pcb *pcb, uint8_t backlog) {
 
 AsyncClient::AsyncClient(tcp_pcb *pcb)
   : _connect_cb(0), _connect_cb_arg(0), _discard_cb(0), _discard_cb_arg(0), _sent_cb(0), _sent_cb_arg(0), _error_cb(0), _error_cb_arg(0), _recv_cb(0),
-    _recv_cb_arg(0), _pb_cb(0), _pb_cb_arg(0), _timeout_cb(0), _timeout_cb_arg(0), _poll_cb(0), _poll_cb_arg(0), _ack_pcb(true), _tx_last_packet(0),
-    _rx_timeout(0), _rx_last_ack(0), _ack_timeout(CONFIG_ASYNC_TCP_MAX_ACK_TIME), _connect_port(0) {
+    _recv_cb_arg(0), _pb_cb(0), _pb_cb_arg(0), _timeout_cb(0), _timeout_cb_arg(0), _poll_cb(0), _poll_cb_arg(0), _cb_ctx(nullptr), _tx_last_packet(0),
+    _rx_ack_len(0), _rx_timeout(0), _rx_last_ack(0), _ack_timeout(CONFIG_ASYNC_TCP_MAX_ACK_TIME), _connect_port(0) {
   _pcb = pcb;
   if (_pcb) {
     _rx_last_packet = millis();
@@ -786,6 +790,10 @@ AsyncClient::AsyncClient(tcp_pcb *pcb)
 AsyncClient::~AsyncClient() {
   if (_pcb) {
     _close();
+  }
+  // Inform all callbacks in the stack that this object is now destructed.
+  for (AsyncClientCallbackContext *ctx = _cb_ctx; ctx != nullptr; ctx = ctx->next) {
+    ctx->client_is_valid = false;
   }
 }
 
@@ -939,7 +947,16 @@ bool AsyncClient::connect(const char *host, uint16_t port) {
 
 void AsyncClient::close() {
   if (_pcb) {
-    _tcp_recved(&_pcb, _rx_ack_len);
+    // If we're in an onData callback, add the final packet size to the ack count
+    // before closing the connection.
+    size_t pending = _rx_ack_len;
+    _rx_ack_len = 0;
+    for (AsyncClientCallbackContext *ctx = _cb_ctx; ctx != nullptr; ctx = ctx->next) {
+      pending += ctx->ack_len;
+    }
+    if (pending) {
+      _tcp_recved(&_pcb, pending);
+    }
   }
   _close();
 }
@@ -1009,6 +1026,15 @@ void AsyncClient::ackPacket(struct pbuf *pb) {
   pbuf_free(pb);
 }
 
+void AsyncClient::ackLater() {
+  // The loop here is of dubious necessity: the only way to get nested callbacks (at the time of this writing)
+  // is to call abort() during an onData or onPacket callback.  Calling ackLater() in that context wouldn't do
+  // anything useful.  Still we err on the side of being technically correct.
+  for (AsyncClientCallbackContext *ctx = _cb_ctx; ctx != nullptr; ctx = ctx->next) {
+    ctx->ack_later = true;
+  }
+}
+
 /*
  * Main Private Methods
  * */
@@ -1041,30 +1067,83 @@ int8_t AsyncClient::_connected(tcp_pcb *pcb, int8_t err) {
   return ERR_OK;
 }
 
+// Disable the "dangling pointer" warning for these calls with newer GCCs
+// We store a pointer to a stack local AsyncClientCallbackContext in the AsyncClient object over the context of the function
+// call to track if the object was destroyed.  If so, we do not reset the pointer, which GCC identifies as a possible
+// dangling reference case.  It is not - the reference was destroyed along with the AsyncClient object.
+#if defined(__GNUC__) && !defined(__clang__) && (__GNUC__ >= 12)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdangling-pointer"
+#endif
+
 void AsyncClient::_error(int8_t err) {
+  AsyncClientCallbackContext ctx;
+  ctx.next = _cb_ctx;
+  _cb_ctx = &ctx;
   if (_error_cb) {
     async_tcp_log_elapsed("onError", _error_cb(_error_cb_arg, this, err));
   }
+  // Early exit if the error callback destructed our object.
+  // Discard callback is already destroyed, so we cannot call it; so just return.
+  if (!ctx.client_is_valid) {
+    return;
+  }
+  // Since we no longer need it, release the callback context before calling discard
+  // so we don't have to check client_is_valid again before clearing it.
+  _cb_ctx = ctx.next;
   if (_discard_cb) {
     async_tcp_log_elapsed("onDisconnect", _discard_cb(_discard_cb_arg, this));
   }
 }
 
-// In LwIP Thread
-int8_t AsyncClient::_lwip_fin(tcp_pcb *pcb, int8_t err) {
-  if (!_pcb || pcb != _pcb) {
-    async_tcp_log_d("0x%08" PRIx32 " != 0x%08" PRIx32, (uint32_t)pcb, (uint32_t)_pcb);
-    return ERR_OK;
+int8_t AsyncClient::_recv(tcp_pcb *pcb, pbuf *pb, int8_t err) {
+  AsyncClientCallbackContext ctx;
+  ctx.next = _cb_ctx;
+  _cb_ctx = &ctx;
+  while (pb != NULL) {
+    _rx_last_packet = millis();
+    // Grab the next pbuf.  We hand it to the user callback, then ack it if needed.
+    pbuf *b = pb;
+    pb = pb->next;
+    b->next = NULL;
+    ctx.ack_later = false;
+    if (_pb_cb) {
+      async_tcp_log_elapsed("onPacket", _pb_cb(_pb_cb_arg, this, b));
+      // Break if object was destructed or pcb closed
+      if ((!ctx.client_is_valid) || (!_pcb)) {
+        break;
+      }
+    } else {
+      ctx.ack_len = b->len;
+      if (_recv_cb) {
+        async_tcp_log_elapsed("onData", _recv_cb(_recv_cb_arg, this, b->payload, b->len));
+      }
+      pbuf_free(b);
+      // Break if object was destructed or pcb closed (and thus we do not need to ack the data)
+      if ((!ctx.client_is_valid) || (!_pcb)) {
+        break;
+      }
+      if (ctx.ack_later == false) {
+        _tcp_recved(&_pcb, ctx.ack_len);
+      } else {
+        _rx_ack_len += ctx.ack_len;
+      }
+      ctx.ack_len = 0;
+    }
   }
-  _reset_tcp_callbacks(_pcb, this);
-  if (tcp_close(_pcb) != ERR_OK) {
-    tcp_abort(_pcb);
+  if (pb) {
+    pbuf_free(pb);  // Release any un-processed pbufs if the client was invalidated during callbacks
   }
-  _pcb = NULL;
+  if (ctx.client_is_valid) {
+    _cb_ctx = ctx.next;
+  }
   return ERR_OK;
 }
 
-// In Async Thread
+#if defined(__GNUC__) && !defined(__clang__) && (__GNUC__ >= 12)
+#pragma GCC diagnostic pop
+#endif
+
 int8_t AsyncClient::_fin(tcp_pcb *pcb, int8_t err) {
   close();
   return ERR_OK;
@@ -1074,31 +1153,6 @@ int8_t AsyncClient::_sent(tcp_pcb *pcb, uint16_t len) {
   _rx_last_ack = _rx_last_packet = millis();
   if (_sent_cb) {
     async_tcp_log_elapsed("onAck", _sent_cb(_sent_cb_arg, this, len, (_rx_last_packet - _tx_last_packet)));
-  }
-  return ERR_OK;
-}
-
-int8_t AsyncClient::_recv(tcp_pcb *pcb, pbuf *pb, int8_t err) {
-  while (pb != NULL) {
-    _rx_last_packet = millis();
-    // we should not ack before we assimilate the data
-    _ack_pcb = true;
-    pbuf *b = pb;
-    pb = b->next;
-    b->next = NULL;
-    if (_pb_cb) {
-      async_tcp_log_elapsed("onPacket", _pb_cb(_pb_cb_arg, this, b));
-    } else {
-      if (_recv_cb) {
-        async_tcp_log_elapsed("onData", _recv_cb(_recv_cb_arg, this, b->payload, b->len));
-      }
-      if (!_ack_pcb) {
-        _rx_ack_len += b->len;
-      } else if (_pcb) {
-        _tcp_recved(&_pcb, b->len);
-      }
-      pbuf_free(b);
-    }
   }
   return ERR_OK;
 }
@@ -1144,12 +1198,7 @@ void AsyncClient::_dns_found(ip_addr_t *ipaddr) {
   if (ipaddr) {
     connect(*ipaddr, _connect_port);
   } else {
-    if (_error_cb) {
-      async_tcp_log_elapsed("onError", _error_cb(_error_cb_arg, this, -55));
-    }
-    if (_discard_cb) {
-      async_tcp_log_elapsed("onDisconnect", _discard_cb(_discard_cb_arg, this));
-    }
+    _error(-55);
   }
 }
 
