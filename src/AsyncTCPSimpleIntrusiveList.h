@@ -29,7 +29,7 @@ public:
 public:
   // Object methods
 
-  SimpleIntrusiveList() : _head(nullptr), _tail(&_head) {}
+  SimpleIntrusiveList() : _head(nullptr), _tail(&_head), _size(0) {}
   ~SimpleIntrusiveList() {
     clear();
   }

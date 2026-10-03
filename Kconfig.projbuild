@@ -52,4 +52,10 @@ config ASYNC_TCP_PRIORITY
     default 10
     help
         This configures the priority of the Async TCP task.
+
+config ASYNC_TCP_ASSERTIONS
+    bool "Async TCP extra assertions"
+    default "n"
+    help
+        Enable some additional runtime checks for conditions thought to be impossible.
 endmenu
