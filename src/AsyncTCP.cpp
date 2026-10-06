@@ -6,9 +6,9 @@
 #include "AsyncTCPSimpleIntrusiveList.h"
 
 /**
- * LibreTiny specific configurations
+ * Non-ESP32 specific configurations
  */
-#if defined(LIBRETINY)
+#if defined(LIBRETINY) || defined(ESP8266)
 #include <Arduino.h>
 // LibreTiny does not support IDF - disable code that expects it to be available
 #define ESP_IDF_VERSION_MAJOR (0)
@@ -17,12 +17,19 @@
 // ESP watchdog is not available
 #undef CONFIG_ASYNC_TCP_USE_WDT
 #define CONFIG_ASYNC_TCP_USE_WDT 0
-#endif  // LIBRETINY
+#endif  // LIBRETINY || ESP8266
+
+#ifdef ESP8266
+#include <Schedule.h>
+typedef err_t esp_err_t;
+#define ESP_OK 0
+#define ESP_FAIL -1
+#endif
 
 /**
- * Arduino specific configurations
+ * ESP32 Arduino specific configurations
  */
-#if defined(ARDUINO) && !defined(LIBRETINY)
+#if defined(ARDUINO) && !defined(LIBRETINY) && !defined(ESP8266)
 #include <Arduino.h>
 #include <esp_idf_version.h>
 #if (ESP_IDF_VERSION_MAJOR >= 5)
@@ -53,13 +60,8 @@ extern "C" {
 }
 
 #if CONFIG_ASYNC_TCP_USE_WDT
-#include "esp_task_wdt.h"
-#endif
-
 // Required for:
 // https://github.com/espressif/arduino-esp32/blob/3.0.3/libraries/Network/src/NetworkInterface.cpp#L37-L47
-
-#if CONFIG_ASYNC_TCP_USE_WDT
 #include "esp_task_wdt.h"
 #define ASYNC_TCP_MAX_TASK_SLEEP (pdMS_TO_TICKS(1000 * CONFIG_ESP_TASK_WDT_TIMEOUT_S) / 4)
 #else
@@ -100,13 +102,13 @@ struct tcp_core_guard {
 #endif  // CONFIG_LWIP_TCPIP_CORE_LOCKING
 }  // anonymous namespace
 
-#define INVALID_CLOSED_SLOT -1
-
 /*
   TCP poll interval is specified in terms of the TCP coarse timer interval, which is called twice a second
   https://github.com/espressif/esp-lwip/blob/2acf959a2bb559313cd2bf9306c24612ba3d0e19/src/core/tcp.c#L1895
 */
+#ifndef CONFIG_ASYNC_TCP_POLL_TIMER
 #define CONFIG_ASYNC_TCP_POLL_TIMER 1
+#endif
 
 /*
  * TCP/IP Event Task
@@ -170,16 +172,39 @@ public:
   static void __attribute__((visibility("internal"))) handle_async_event(lwip_tcp_event_packet_t *event);
 
   // LwIP TCP event callbacks that (will) require privileged access
-  static int8_t __attribute__((visibility("internal"))) tcp_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *pb, int8_t err);
-  static int8_t __attribute__((visibility("internal"))) tcp_sent(void *arg, struct tcp_pcb *pcb, uint16_t len);
-  static void __attribute__((visibility("internal"))) tcp_error(void *arg, int8_t err);
-  static int8_t __attribute__((visibility("internal"))) tcp_poll(void *arg, struct tcp_pcb *pcb);
-  static int8_t __attribute__((visibility("internal"))) tcp_accept(void *arg, tcp_pcb *pcb, int8_t err);
+  static err_t __attribute__((visibility("internal"))) tcp_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *pb, err_t err);
+  static err_t __attribute__((visibility("internal"))) tcp_sent(void *arg, struct tcp_pcb *pcb, uint16_t len);
+  static void __attribute__((visibility("internal"))) tcp_error(void *arg, err_t err);
+  static err_t __attribute__((visibility("internal"))) tcp_poll(void *arg, struct tcp_pcb *pcb);
+  static err_t __attribute__((visibility("internal"))) tcp_accept(void *arg, tcp_pcb *pcb, err_t err);
 };
 
-// Guard class for the global queue
-namespace {
+// Random number generator for poll event coalescing
+static uint32_t _xor_shift_state = 31;  // any nonzero seed will do
+static uint32_t _xor_shift_next() {
+  uint32_t x = _xor_shift_state;
+  x ^= x << 13;
+  x ^= x >> 17;
+  x ^= x << 5;
+  return _xor_shift_state = x;
+}
 
+
+// The global queue
+static SimpleIntrusiveList<lwip_tcp_event_packet_t> _async_queue;
+
+static void _free_event(lwip_tcp_event_packet_t *evpkt) {
+  if ((evpkt->event == LWIP_TCP_RECV) && (evpkt->recv.pb != nullptr)) {
+    pbuf_free(evpkt->recv.pb);
+  }
+  delete evpkt;
+}
+
+
+// Guard class for the global queue
+
+#if defined(FREERTOS)
+namespace {
 static SemaphoreHandle_t _async_queue_mutex = nullptr;
 
 class queue_mutex_guard {
@@ -196,26 +221,10 @@ public:
     return holds_mutex;
   };
 };
+
+static TaskHandle_t _async_service_task_handle = NULL;
 }  // anonymous namespace
 
-static SimpleIntrusiveList<lwip_tcp_event_packet_t> _async_queue;
-static TaskHandle_t _async_service_task_handle = NULL;
-
-static uint32_t _xor_shift_state = 31;  // any nonzero seed will do
-static uint32_t _xor_shift_next() {
-  uint32_t x = _xor_shift_state;
-  x ^= x << 13;
-  x ^= x >> 17;
-  x ^= x << 5;
-  return _xor_shift_state = x;
-}
-
-static void _free_event(lwip_tcp_event_packet_t *evpkt) {
-  if ((evpkt->event == LWIP_TCP_RECV) && (evpkt->recv.pb != nullptr)) {
-    pbuf_free(evpkt->recv.pb);
-  }
-  delete evpkt;
-}
 
 static inline void _send_async_event(lwip_tcp_event_packet_t *e) {
   if (e == nullptr) {
@@ -232,6 +241,35 @@ static inline void _prepend_async_event(lwip_tcp_event_packet_t *e) {
   _async_queue.push_front(e);
   xTaskNotifyGive(_async_service_task_handle);
 }
+#else
+
+namespace {
+  // No-op guard class
+  class queue_mutex_guard {} __attribute__((unused));
+}  // anonymous namespace
+
+static void _process_async_event();
+
+static inline void _send_async_event(lwip_tcp_event_packet_t *e) {
+  if (e == nullptr) {
+    return;
+  }
+  _async_queue.push_back(e);
+  if (_async_queue.size() == 1) {
+    schedule_function(_process_async_event);
+  }
+}
+
+static inline void _prepend_async_event(lwip_tcp_event_packet_t *e) {
+  if (e == nullptr) {
+    return;
+  }
+  _async_queue.push_front(e);
+  if (_async_queue.size() == 1) {
+    schedule_function(_process_async_event);
+  }
+}
+#endif
 
 static inline lwip_tcp_event_packet_t *_get_async_event() {
   queue_mutex_guard guard;
@@ -295,6 +333,7 @@ static size_t _remove_events_for_client(AsyncClient *client) {
   return count;
 };
 
+
 void AsyncTCP_detail::handle_async_event(lwip_tcp_event_packet_t *e) {
   if (e->client == NULL) {
     // do nothing when arg is NULL
@@ -328,6 +367,7 @@ void AsyncTCP_detail::handle_async_event(lwip_tcp_event_packet_t *e) {
   _free_event(e);
 }
 
+#ifdef FREERTOS
 static void _async_service_task(void *pvParameters) {
   async_tcp_log_d("Task 'async_tcp' started on core %d", static_cast<int>(xPortGetCoreID()));
 #if CONFIG_ASYNC_TCP_USE_WDT
@@ -399,6 +439,24 @@ static bool _start_async_task() {
   }
   return true;
 }
+#else
+
+static void _process_async_event() {
+  auto packet = _get_async_event();
+  if (packet) {
+    async_tcp_log_elapsed("handle_async_event", AsyncTCP_detail::handle_async_event(packet));
+  }
+  if (_async_queue.size() > 0) {
+    schedule_function(_process_async_event);
+  }
+}
+
+static inline bool _start_async_task() {
+  return true;
+}
+
+#endif
+
 
 /*
  * LwIP Callbacks
@@ -423,7 +481,7 @@ static void _reset_tcp_callbacks(tcp_pcb *pcb, AsyncClient *client) {
   }
 }
 
-static int8_t _tcp_connected(void *arg, tcp_pcb *pcb, int8_t err) {
+static err_t _tcp_connected(void *arg, tcp_pcb *pcb, err_t err) {
   // ets_printf("+C: 0x%08x\n", pcb);
   AsyncClient *client = reinterpret_cast<AsyncClient *>(arg);
   lwip_tcp_event_packet_t *e = new (std::nothrow) lwip_tcp_event_packet_t{LWIP_TCP_CONNECTED, client};
@@ -438,7 +496,7 @@ static int8_t _tcp_connected(void *arg, tcp_pcb *pcb, int8_t err) {
   return ERR_OK;
 }
 
-int8_t AsyncTCP_detail::tcp_poll(void *arg, struct tcp_pcb *pcb) {
+err_t AsyncTCP_detail::tcp_poll(void *arg, struct tcp_pcb *pcb) {
   // throttle polling events queueing when event queue is getting filled up, let it handle _onack's
   {
     queue_mutex_guard guard;
@@ -463,7 +521,7 @@ int8_t AsyncTCP_detail::tcp_poll(void *arg, struct tcp_pcb *pcb) {
   return ERR_OK;
 }
 
-int8_t AsyncTCP_detail::tcp_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *pb, int8_t err) {
+err_t AsyncTCP_detail::tcp_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *pb, err_t err) {
   AsyncClient *client = reinterpret_cast<AsyncClient *>(arg);
   lwip_tcp_event_packet_t *e = new (std::nothrow) lwip_tcp_event_packet_t{LWIP_TCP_RECV, client};
   if (!e) {
@@ -487,7 +545,7 @@ int8_t AsyncTCP_detail::tcp_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *pb
   return ERR_OK;
 }
 
-int8_t AsyncTCP_detail::tcp_sent(void *arg, struct tcp_pcb *pcb, uint16_t len) {
+err_t AsyncTCP_detail::tcp_sent(void *arg, struct tcp_pcb *pcb, uint16_t len) {
   // ets_printf("+S: 0x%08x\n", pcb);
   AsyncClient *client = reinterpret_cast<AsyncClient *>(arg);
   lwip_tcp_event_packet_t *e = new (std::nothrow) lwip_tcp_event_packet_t{LWIP_TCP_SENT, client};
@@ -503,7 +561,7 @@ int8_t AsyncTCP_detail::tcp_sent(void *arg, struct tcp_pcb *pcb, uint16_t len) {
   return ERR_OK;
 }
 
-void AsyncTCP_detail::tcp_error(void *arg, int8_t err) {
+void AsyncTCP_detail::tcp_error(void *arg, err_t err) {
   // ets_printf("+E: 0x%08x\n", arg);
   AsyncClient *client = reinterpret_cast<AsyncClient *>(arg);
   if (client && client->_pcb) {
@@ -546,11 +604,15 @@ static void _tcp_dns_found(const char *name, ip_addr_t *ipaddr, void *arg) {
 }
 
 /*
- * TCP/IP API Calls
+ * TCP/IP API Ccll wrappers
+ *
+ * Handles TCPIP core locking and ensures that the AsyncClient is not destroyed while the call is in progress.
  * */
 
 #include "lwip/priv/tcpip_priv.h"
 
+// If LwIP is configured with mutex support, wrap all calls with tcpip_api_call() to ensure that the LwIP core is locked during the call.
+#ifndef NO_SYS
 typedef struct {
   struct tcpip_api_call_data call;
   tcp_pcb **pcb;
@@ -767,6 +829,108 @@ static tcp_pcb *_tcp_listen_with_backlog(tcp_pcb *pcb, uint8_t backlog) {
   tcpip_api_call(_tcp_listen_api, (struct tcpip_api_call_data *)&msg);
   return pcb;
 }
+
+#else
+
+static esp_err_t _tcp_output(tcp_pcb **pcb) {
+  if (!pcb || !*pcb) {
+    return ERR_CONN;
+  }
+  return tcp_output(*pcb);
+}
+
+static esp_err_t _tcp_write(tcp_pcb **pcb, const char *data, size_t size, uint8_t apiflags) {
+  if (!pcb || !*pcb) {
+    return ERR_CONN;
+  }
+  return tcp_write(*pcb, data, size, apiflags);
+}
+
+static esp_err_t _tcp_recved(tcp_pcb **pcb, size_t len) {
+  if (!pcb || !*pcb) {
+    return ERR_CONN;
+  }
+  tcp_recved(*pcb, len); 
+  return ERR_OK;
+}
+
+static esp_err_t _tcp_close(tcp_pcb **pcb, AsyncClient *client) {
+  // Unlike the other calls, this is not a direct wrapper of the LwIP function;
+  // we perform the AsyncClient teardown interlocked safely with the LwIP task.
+
+  // As a postcondition, the queue must not have any events referencing
+  // the AsyncClient in api_call_msg->close.  This is because it is possible for
+  // an error event to have been queued, clearing the pcb*, but after the async
+  // thread has committed to closing/destructing the AsyncClient object.
+
+  if (*pcb) {
+    tcp_pcb *lpcb = *pcb;
+    _reset_tcp_callbacks(lpcb, client);
+    if (tcp_close(lpcb) != ERR_OK) {
+      // We do not permit failure here: abandon the pcb anyways.
+      tcp_abort(lpcb);
+    }
+    *pcb = nullptr;  // PCB is now the property of LwIP
+    return ERR_OK;
+  } else {
+    // Ensure there is not an error event queued for this client
+    if (_remove_events_for_client(client)) {
+      return ERR_OK;
+    }
+  }
+  return ERR_CONN;
+}
+
+static esp_err_t _tcp_abort(tcp_pcb **pcb, AsyncClient *client) {
+  // Like close(), we must ensure that the queue is cleared of any events referencing the AsyncClient.
+  // ERR_ABRT: the pcb was aborted.
+  // ERR_OK:   the pcb was already gone, but a queued error event was purged, so the
+  //           caller must still run the discard callback (dispose needs to run).
+  // ERR_CONN: nothing to do (pcb already null and no queued events).
+  if (!pcb) {
+    return ERR_CONN;
+  }
+  if (*pcb) {
+    _reset_tcp_callbacks(*pcb, client);
+    tcp_abort(*pcb);
+    *pcb = nullptr;  // PCB is now the property of LwIP
+    return ERR_ABRT;
+  } else {
+    // Ensure there is not an error event queued for this client
+    return _remove_events_for_client(client) ? ERR_OK : ERR_CONN;
+  }
+}
+
+static esp_err_t _tcp_connect(tcp_pcb *pcb, ip_addr_t *addr, uint16_t port, tcp_connected_fn cb) {
+  if (!pcb) {
+    return ESP_FAIL;
+  }
+  return tcp_connect(pcb, addr, port, cb);
+}
+
+static esp_err_t _tcp_bind(tcp_pcb **pcb, ip_addr_t *addr, uint16_t port) {
+  if (!pcb || !*pcb) {
+    return ESP_FAIL;
+  }
+  err_t err = tcp_bind(*pcb, addr, port);
+  if (err != ERR_OK) {
+    // Close the pcb on behalf of the server without an extra round-trip through the LwIP lock
+    if (tcp_close(*pcb) != ERR_OK) {
+      tcp_abort(*pcb);
+    }
+    *pcb = nullptr;  // PCB is now owned by LwIP
+  }
+  return err;
+}
+
+static tcp_pcb *_tcp_listen_with_backlog(tcp_pcb *pcb, uint8_t backlog) {
+  if (!pcb) {
+    return NULL;
+  }
+  return tcp_listen_with_backlog(pcb, backlog ? backlog : 0xFF);
+}
+
+#endif
 
 /*
   Async TCP Client
@@ -1028,7 +1192,7 @@ int8_t AsyncClient::_close() {
  * Private Callbacks
  * */
 
-int8_t AsyncClient::_connected(tcp_pcb *pcb, int8_t err) {
+int8_t AsyncClient::_connected(tcp_pcb *pcb, int8_t err __attribute__((unused))) {
   _pcb = reinterpret_cast<tcp_pcb *>(pcb);
   if (_pcb) {
     _rx_last_packet = millis();
@@ -1051,7 +1215,7 @@ void AsyncClient::_error(int8_t err) {
 }
 
 // In LwIP Thread
-int8_t AsyncClient::_lwip_fin(tcp_pcb *pcb, int8_t err) {
+int8_t AsyncClient::_lwip_fin(tcp_pcb *pcb, int8_t err __attribute__((unused))) {
   if (!_pcb || pcb != _pcb) {
     async_tcp_log_d("0x%08" PRIx32 " != 0x%08" PRIx32, (uint32_t)pcb, (uint32_t)_pcb);
     return ERR_OK;
@@ -1065,12 +1229,12 @@ int8_t AsyncClient::_lwip_fin(tcp_pcb *pcb, int8_t err) {
 }
 
 // In Async Thread
-int8_t AsyncClient::_fin(tcp_pcb *pcb, int8_t err) {
+int8_t AsyncClient::_fin(tcp_pcb *pcb __attribute__((unused)), int8_t err __attribute__((unused))) {
   close();
   return ERR_OK;
 }
 
-int8_t AsyncClient::_sent(tcp_pcb *pcb, uint16_t len) {
+int8_t AsyncClient::_sent(tcp_pcb *pcb __attribute__((unused)), uint16_t len) {
   _rx_last_ack = _rx_last_packet = millis();
   if (_sent_cb) {
     async_tcp_log_elapsed("onAck", _sent_cb(_sent_cb_arg, this, len, (_rx_last_packet - _tx_last_packet)));
@@ -1078,7 +1242,7 @@ int8_t AsyncClient::_sent(tcp_pcb *pcb, uint16_t len) {
   return ERR_OK;
 }
 
-int8_t AsyncClient::_recv(tcp_pcb *pcb, pbuf *pb, int8_t err) {
+int8_t AsyncClient::_recv(tcp_pcb *pcb __attribute__((unused)), pbuf *pb, int8_t err __attribute__((unused))) {
   while (pb != NULL) {
     _rx_last_packet = millis();
     // we should not ack before we assimilate the data
@@ -1567,7 +1731,7 @@ void AsyncServer::end() {
 }
 
 // runs on LwIP thread
-int8_t AsyncTCP_detail::tcp_accept(void *arg, tcp_pcb *pcb, int8_t err) {
+err_t AsyncTCP_detail::tcp_accept(void *arg, tcp_pcb *pcb, err_t err __attribute__((unused))) {
   if (!pcb) {
     async_tcp_log_e("_accept failed: pcb is NULL");
     return ERR_ABRT;
