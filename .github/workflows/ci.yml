@@ -112,13 +112,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Cache key
+        id: cache-key
+        run: echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+
       - name: Cache PlatformIO
         uses: actions/cache@v6
         with:
-          key: ${{ runner.os }}-pio-${{ matrix.env }}
+          key: ${{ runner.os }}-pio-${{ matrix.env }}-${{ steps.cache-key.outputs.month }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: ${{ runner.os }}-pio-${{ matrix.env }}-${{ steps.cache-key.outputs.month }}-
+          # Not ~/.platformio/penv: platforms build venvs there that link to the
+          # runner's Python, which a runner image update can remove.
           path: |
             ~/.cache/pip
-            ~/.platformio
+            ~/.platformio/packages
+            ~/.platformio/platforms
 
       - name: Python
         uses: actions/setup-python@v7
