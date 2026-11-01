@@ -33,6 +33,16 @@ repos:
       - id: codespell
         exclude: ^.*\.(svd|SVD)$
 
+  - repo: local
+    hooks:
+      # Unity runs what RUN_TEST lists, so an unregistered test is silently dead
+      - id: tests-registered
+        name: every test is registered to run
+        entry: python3 test/check_registration.py
+        language: system
+        files: ^test/(check_registration\.py|test_native/(test_main\.cpp|tests/.*\.cpp))$
+        pass_filenames: false
+
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: "v18.1.3"
     hooks:

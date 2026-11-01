@@ -53,3 +53,13 @@ I personally use the following configuration in my projects:
 
 - ESP32
 - Arduino Core 2.x and 3.x
+
+## Testing
+
+`test/test_native` runs the library on a desktop, against mock lwIP and FreeRTOS:
+
+```
+pio test -e native
+```
+
+See [test/test_native/README.md](test/test_native/README.md) for how to run it and read the results.

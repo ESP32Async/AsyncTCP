@@ -1611,7 +1611,7 @@ int8_t AsyncClientImpl::_poll(tcp_pcb *pcb) {
   }
 
   if (pcb != _pcb) {
-    async_tcp_log_d("0x%08" PRIx32 " != 0x%08" PRIx32, (uint32_t)pcb, (uint32_t)_pcb);
+    async_tcp_log_d("0x%08" PRIx32 " != 0x%08" PRIx32, (uint32_t)(uintptr_t)pcb, (uint32_t)(uintptr_t)_pcb);
     return ERR_OK;
   }
 
