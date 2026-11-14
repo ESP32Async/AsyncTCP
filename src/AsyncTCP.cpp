@@ -425,6 +425,7 @@ public:
   void _adopt(tcp_pcb *pcb);
   int8_t _connected(tcp_pcb *pcb, int8_t err);
   void _error(int8_t err);
+  void _report_error(int8_t err);
   int8_t _poll(tcp_pcb *pcb);
   int8_t _sent(tcp_pcb *pcb, uint16_t len, uint32_t time);
   int8_t _fin(tcp_pcb *pcb, int8_t err);
@@ -1232,8 +1233,10 @@ void AsyncClientImpl::close() {
   const size_t pending = _rx_ack_len + _in_callback_ack_len;
   _rx_ack_len = 0;
   _in_callback_ack_len = 0;
+  bool owed;
   // Unconditional: an outstanding lookup is also held by LwIP, and a queued error event
-  // must be purged.
+  // must be purged.  The notification is claimed here too, as _error() does, so an event
+  // the async task has already taken off the queue cannot report this connection again.
   with_tcp_core_lock([&]() -> err_t {
     _abandon_resolve(this);
     if (_pcb) {
@@ -1250,16 +1253,13 @@ void AsyncClientImpl::close() {
     } else {
       _remove_events_for_client(this);
     }
+    owed = _dispose_owed;
+    _dispose_owed = false;
     return ERR_OK;
   });
-  // _pcb is now NULL, all queued events are cleared, and any outstanding lookup has been
-  // stood down.  Call the dispose callback if owed.
-  if (_facade && _dispose_owed) {
-    _dispose_owed = false;
-    if (_discard_cb) {
-      auto self = shared_from_this();  // ensure our object stays in scope during the callback
-      async_tcp_log_elapsed("onDisconnect", _discard_cb(_discard_cb_arg, _facade));
-    }
+  if (owed && _facade && _discard_cb) {
+    auto self = shared_from_this();  // ensure our object stays in scope during the callback
+    async_tcp_log_elapsed("onDisconnect", _discard_cb(_discard_cb_arg, _facade));
   }
 }
 
@@ -1267,10 +1267,13 @@ int8_t AsyncClientImpl::abort() {
   if (!_dispose_owed) {
     return ERR_CONN;  // as in close()
   }
+  bool owed;
   // ERR_ABRT: the pcb was aborted.  ERR_OK: a queued error event was purged.
   // ERR_CONN: nothing to abort.
   const int8_t err = with_tcp_core_lock([&]() -> err_t {
     _abandon_resolve(this);
+    owed = _dispose_owed;
+    _dispose_owed = false;
     if (_pcb) {
       _reset_tcp_callbacks(_pcb, this);
       tcp_abort(_pcb);
@@ -1279,11 +1282,10 @@ int8_t AsyncClientImpl::abort() {
     }
     return _remove_events_for_client(this) ? ERR_OK : ERR_CONN;
   });
-  // LwIP invokes the error callback when abort is issued; preserve this semantic.
-  // This will also trigger the dispose callback if otherwise owed (ie. error is already pending or canceling a DNS lookup).
-  // If the pcb was previously invalidated by some other queued error, we've discarded that value; so we always send ERR_ABRT.
-  if (err != ERR_CONN || _dispose_owed) {
-    _error(ERR_ABRT);
+  // LwIP invokes the error callback when abort is issued; preserve this semantic.  Any error
+  // already queued was purged, so the report is always ERR_ABRT.
+  if (owed) {
+    _report_error(ERR_ABRT);
   }
   return err;
 }
@@ -1413,13 +1415,24 @@ int8_t AsyncClientImpl::_connected(tcp_pcb *pcb, int8_t err) {
 }
 
 void AsyncClientImpl::_error(int8_t err) {
-  // Hold a reference to self to ensure this remains valid throughout the user callbacks.
-  auto self = shared_from_this();
   // Claim the notification before running anything: onError may destroy the AsyncClient,
   // and ~AsyncClient() closes, which would otherwise report this same connection again.
-  const bool owed = _dispose_owed;
-  _dispose_owed = false;
-  // Run error callback
+  // Under the lock, as close() and abort() claim it; if they won, they have reported it.
+  bool owed;
+  with_tcp_core_lock([&]() -> err_t {
+    owed = _dispose_owed;
+    _dispose_owed = false;
+    return ERR_OK;
+  });
+  if (owed) {
+    _report_error(err);
+  }
+}
+
+// The notification must already be claimed.
+void AsyncClientImpl::_report_error(int8_t err) {
+  // Hold a reference to self to ensure this remains valid throughout the user callbacks.
+  auto self = shared_from_this();
   if (_error_cb) {
     async_tcp_log_elapsed("onError", _error_cb(_error_cb_arg, _facade, err));
   }
@@ -1427,7 +1440,7 @@ void AsyncClientImpl::_error(int8_t err) {
   // - User might have deleted the AsyncClient (_facade is now nullptr)
   // - User might have reconnected the object (re-armed _dispose_owed)
   // In either case, we skip the dispose.
-  if (owed && _facade && !_dispose_owed && _discard_cb) {
+  if (_facade && !_dispose_owed && _discard_cb) {
     async_tcp_log_elapsed("onDisconnect", _discard_cb(_discard_cb_arg, _facade));
   }
 }
