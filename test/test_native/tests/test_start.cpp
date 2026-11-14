@@ -112,6 +112,22 @@ static void test_start_setters_do_not_call_lwip_before_it_starts(void) {
   app_delete(c);
 }
 
+// Nor may closing, aborting or destroying a client that never connected.
+static void test_start_unconnected_client_does_not_call_lwip_before_it_starts(void) {
+  faults().not_started = true;
+  AsyncClient *c = new AsyncClient();
+  Recorder t;
+  t.attach(*c);
+  app_close(*c);
+  TEST_ASSERT_EQUAL_INT(ERR_CONN, app_abort(*c));
+  app_delete(c);
+  asynctcp_test_pump();
+  TEST_ASSERT_EQUAL_UINT(0, calls_before_start());
+  TEST_ASSERT_EQUAL_STRING("", t.seq.c_str());
+  TEST_ASSERT_EQUAL_STRING("", t.violations.c_str());
+  faults().not_started = false;
+}
+
 void run_start_tests(void) {
   UnitySetTestFile(__FILE__);
   RUN_TEST(test_start_client_that_never_connects_is_destructible_without_a_mutex);
@@ -119,4 +135,5 @@ void run_start_tests(void) {
   RUN_TEST(test_start_client_does_not_adopt_a_pcb_without_a_task);
   RUN_TEST(test_start_client_adopts_a_pcb_once_the_task_can_be_created);
   RUN_TEST(test_start_setters_do_not_call_lwip_before_it_starts);
+  RUN_TEST(test_start_unconnected_client_does_not_call_lwip_before_it_starts);
 }
