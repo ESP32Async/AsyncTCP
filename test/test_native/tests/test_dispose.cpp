@@ -311,6 +311,40 @@ static void test_dispose_is_still_delivered_when_a_reset_beats_the_destructor(vo
   TEST_ASSERT_EQUAL_INT(1, disconnects);
 }
 
+// The async task has taken a reset off the queue but not yet delivered it when another task
+// ends the connection.  Whichever path reports the connection, it is reported once, and
+// nothing follows the onDisconnect.
+static void test_dispose_close_while_a_reset_is_being_delivered_reports_once(void) {
+  AsyncClient c;
+  Recorder t;
+  t.attach(c);
+  tcp_pcb *pcb = establish(c);
+  fire_error(pcb, ERR_RST);
+
+  mockrtos::preempt_async_task([&] {
+    app_close(c);
+  });
+  asynctcp_test_pump();
+  TEST_ASSERT_EQUAL_STRING("CD", t.seq.c_str());
+  TEST_ASSERT_EQUAL_STRING("", t.violations.c_str());
+}
+
+static void test_dispose_abort_while_a_reset_is_being_delivered_reports_once(void) {
+  AsyncClient c;
+  Recorder t;
+  t.attach(c);
+  tcp_pcb *pcb = establish(c);
+  fire_error(pcb, ERR_RST);
+
+  mockrtos::preempt_async_task([&] {
+    app_abort(c);
+  });
+  asynctcp_test_pump();
+  TEST_ASSERT_EQUAL_STRING("CED", t.seq.c_str());
+  TEST_ASSERT_EQUAL_INT8(ERR_ABRT, t.err);
+  TEST_ASSERT_EQUAL_STRING("", t.violations.c_str());
+}
+
 void run_dispose_tests(void) {
   UnitySetTestFile(__FILE__);
   RUN_TEST(test_dispose_a_failed_tcp_connect_owes_nothing_and_does_not_wedge);
@@ -326,4 +360,6 @@ void run_dispose_tests(void) {
   RUN_TEST(test_dispose_is_delivered_once_for_an_explicit_close);
   RUN_TEST(test_dispose_is_delivered_exactly_once_when_the_peer_closes_first);
   RUN_TEST(test_dispose_is_still_delivered_when_a_reset_beats_the_destructor);
+  RUN_TEST(test_dispose_close_while_a_reset_is_being_delivered_reports_once);
+  RUN_TEST(test_dispose_abort_while_a_reset_is_being_delivered_reports_once);
 }

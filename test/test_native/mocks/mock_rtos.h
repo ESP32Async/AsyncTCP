@@ -5,6 +5,7 @@
 #define ASYNCTCP_MOCK_RTOS_H
 
 #include <cstdint>
+#include <functional>
 
 // ---------------------------------------------------------------------------
 // The async-task pump
@@ -42,6 +43,11 @@ unsigned deadlocks();
 // Takes or gives against a null handle.  FreeRTOS faults on those; the runner treats
 // any occurrence as a test failure.
 unsigned null_semaphores();
+
+// Runs <fn> once, as another task would, the next time the async task releases a mutex
+// - the first of which, in a pump, is the one that ends taking an event off the queue.
+// Cleared by reset().
+void preempt_async_task(std::function<void()> fn);
 
 // Failure injection. Reset by reset().
 struct Faults {

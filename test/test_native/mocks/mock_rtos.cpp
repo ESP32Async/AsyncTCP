@@ -85,6 +85,8 @@ std::set<MockSemaphore *> g_semaphores;
 unsigned g_deadlocks = 0;
 unsigned g_null_semaphores = 0;
 mockrtos::Faults g_faults;
+bool g_in_pump = false;
+std::function<void()> g_preempt;
 
 }  // namespace
 
@@ -123,6 +125,11 @@ extern "C" BaseType_t xSemaphoreGive(SemaphoreHandle_t xSemaphore) {
   if (s->depth > 0) {
     s->depth--;
   }
+  if (g_in_pump && g_preempt && s->depth == 0) {
+    auto fn = std::move(g_preempt);
+    g_preempt = nullptr;
+    fn();
+  }
   return pdTRUE;
 }
 
@@ -136,7 +143,6 @@ struct PumpExit {};  // thrown by ulTaskNotifyTake to unwind out of the task loo
 TaskFunction_t g_task_fn = nullptr;
 void *g_task_param = nullptr;
 int g_task_handle_storage = 0;  // address used as the fake TaskHandle_t
-bool g_in_pump = false;
 
 BaseType_t create_task(TaskFunction_t fn, void *param, TaskHandle_t *handle) {
   if (g_faults.fail_task_create) {
@@ -224,6 +230,11 @@ void reset() {
   for (MockSemaphore *s : g_semaphores) {
     s->depth = 0;
   }
+  g_preempt = nullptr;
+}
+
+void preempt_async_task(std::function<void()> fn) {
+  g_preempt = std::move(fn);
 }
 
 Faults &faults() {
