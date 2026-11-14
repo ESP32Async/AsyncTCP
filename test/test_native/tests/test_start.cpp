@@ -1,5 +1,5 @@
 // Starting the library: what clients and servers do when FreeRTOS cannot create the queue
-// mutex or the async task, and that a later start still succeeds.
+// mutex or the async task, and that a later start still succeeds; and before LwIP has started.
 
 #include "fixtures.h"
 
@@ -97,10 +97,43 @@ static void test_start_client_adopts_a_pcb_once_the_task_can_be_created(void) {
   TEST_ASSERT_FALSE(is_live(pcb));
 }
 
+// AsyncMqttClient's constructor calls setNoDelay(true), before setup() can start Wi-Fi.
+static void test_start_setters_do_not_call_lwip_before_it_starts(void) {
+  faults().not_started = true;
+  AsyncClient *c = new AsyncClient();
+  c->setNoDelay(true);
+  c->setNoDelay(false);
+  c->setKeepAlive(7000, 4);
+  c->setKeepAlive(0, 0);
+  TEST_ASSERT_FALSE(c->getNoDelay());
+  TEST_ASSERT_EQUAL_UINT(0, calls_before_start());
+
+  faults().not_started = false;
+  app_delete(c);
+}
+
+// Nor may closing, aborting or destroying a client that never connected.
+static void test_start_unconnected_client_does_not_call_lwip_before_it_starts(void) {
+  faults().not_started = true;
+  AsyncClient *c = new AsyncClient();
+  Recorder t;
+  t.attach(*c);
+  app_close(*c);
+  TEST_ASSERT_EQUAL_INT(ERR_CONN, app_abort(*c));
+  app_delete(c);
+  asynctcp_test_pump();
+  TEST_ASSERT_EQUAL_UINT(0, calls_before_start());
+  TEST_ASSERT_EQUAL_STRING("", t.seq.c_str());
+  TEST_ASSERT_EQUAL_STRING("", t.violations.c_str());
+  faults().not_started = false;
+}
+
 void run_start_tests(void) {
   UnitySetTestFile(__FILE__);
   RUN_TEST(test_start_client_that_never_connects_is_destructible_without_a_mutex);
   RUN_TEST(test_start_connect_is_refused_without_a_task);
   RUN_TEST(test_start_client_does_not_adopt_a_pcb_without_a_task);
   RUN_TEST(test_start_client_adopts_a_pcb_once_the_task_can_be_created);
+  RUN_TEST(test_start_setters_do_not_call_lwip_before_it_starts);
+  RUN_TEST(test_start_unconnected_client_does_not_call_lwip_before_it_starts);
 }

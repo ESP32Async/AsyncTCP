@@ -1365,6 +1365,9 @@ bool AsyncClientImpl::connect(const char *host, uint16_t port) {
 }
 
 void AsyncClientImpl::close() {
+  if (!_dispose_owed) {
+    return;  // no pcb, lookup or event to clear: skip LwIP, which may not be started yet
+  }
   // Ack anything withheld by ackLater(), plus the packet onData is holding right now if
   // we are being called from inside it.  Without this the peer gets an RST rather than a
   // FIN for data the application did in fact process.
@@ -1384,6 +1387,9 @@ void AsyncClientImpl::close() {
 }
 
 int8_t AsyncClientImpl::abort() {
+  if (!_dispose_owed) {
+    return ERR_CONN;  // as in close()
+  }
   int8_t err = _tcp_abort(this);
   // _pcb is now NULL
   // LwIP invokes the error callback when abort is issued; preserve this semantic.
@@ -1670,6 +1676,9 @@ void AsyncClientImpl::setAckTimeout(uint32_t timeout) {
 }
 
 void AsyncClientImpl::setNoDelay(bool nodelay) const {
+  if (!_pcb) {
+    return;  // without a pcb, skip the lock: LwIP may not be started yet
+  }
   with_tcp_core_lock([&]() {
     if (!_pcb) {
       return ERR_CONN;
@@ -1691,6 +1700,9 @@ bool AsyncClientImpl::getNoDelay() {
 }
 
 void AsyncClientImpl::setKeepAlive(uint32_t ms, uint8_t cnt) {
+  if (!_pcb) {
+    return;  // without a pcb, skip the lock: LwIP may not be started yet
+  }
   with_tcp_core_lock([&]() {
     if (!_pcb) {
       return ERR_CONN;
