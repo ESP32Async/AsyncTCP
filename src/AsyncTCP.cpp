@@ -1418,10 +1418,15 @@ void AsyncClientImpl::_error(int8_t err) {
   // Claim the notification before running anything: onError may destroy the AsyncClient,
   // and ~AsyncClient() closes, which would otherwise report this same connection again.
   // Under the lock, as close() and abort() claim it; if they won, they have reported it.
+  // A pcb or a lookup means the client has started a new attempt, which connect() allows only
+  // once this connection has been reported: the event is stale, and what is owed is the new
+  // attempt's.
   bool owed;
   with_tcp_core_lock([&]() -> err_t {
-    owed = _dispose_owed;
-    _dispose_owed = false;
+    owed = _dispose_owed && !_pcb && !_dns_token;
+    if (owed) {
+      _dispose_owed = false;
+    }
     return ERR_OK;
   });
   if (owed) {

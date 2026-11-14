@@ -345,6 +345,48 @@ static void test_dispose_abort_while_a_reset_is_being_delivered_reports_once(voi
   TEST_ASSERT_EQUAL_STRING("", t.violations.c_str());
 }
 
+// As above, but onDisconnect connects again.  The reset belongs to the connection that close()
+// reported, so the new attempt, by address or by name, is neither reported nor left without
+// its own notification.
+static void test_dispose_reconnecting_from_a_close_while_a_reset_is_being_delivered(void) {
+  for (int by_name = 0; by_name < 2; ++by_name) {
+    AsyncClient c;
+    Recorder t;
+    t.attach(c);
+    bool reconnected = false;
+    c.onDisconnect([&](void *, AsyncClient *cl) {
+      t.note('D', cl);
+      if (by_name) {
+        faults().dns_result = ERR_INPROGRESS;
+        reconnected = cl->connect("again.test", kPort);
+      } else {
+        reconnected = cl->connect(kPeer, kPort);
+      }
+    });
+    faults().dns_result = ERR_OK;
+    tcp_pcb *pcb = establish(c);
+    fire_error(pcb, ERR_RST);
+
+    mockrtos::preempt_async_task([&] {
+      app_close(c);
+    });
+    asynctcp_test_pump();
+    TEST_ASSERT_EQUAL_STRING("CD", t.seq.c_str());
+    TEST_ASSERT_TRUE(reconnected);
+    TEST_ASSERT_TRUE(c.connecting());
+
+    c.onDisconnect([&](void *, AsyncClient *cl) {
+      t.note('D', cl);
+    });
+    app_close(c);
+    TEST_ASSERT_EQUAL_STRING("CDD", t.seq.c_str());
+    TEST_ASSERT_EQUAL_size_t(0, live_pcbs());
+    TEST_ASSERT_EQUAL_STRING("", t.violations.c_str());
+    fire_dns(kResolved);
+    asynctcp_test_pump();
+  }
+}
+
 void run_dispose_tests(void) {
   UnitySetTestFile(__FILE__);
   RUN_TEST(test_dispose_a_failed_tcp_connect_owes_nothing_and_does_not_wedge);
@@ -362,4 +404,5 @@ void run_dispose_tests(void) {
   RUN_TEST(test_dispose_is_still_delivered_when_a_reset_beats_the_destructor);
   RUN_TEST(test_dispose_close_while_a_reset_is_being_delivered_reports_once);
   RUN_TEST(test_dispose_abort_while_a_reset_is_being_delivered_reports_once);
+  RUN_TEST(test_dispose_reconnecting_from_a_close_while_a_reset_is_being_delivered);
 }
