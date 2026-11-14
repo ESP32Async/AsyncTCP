@@ -85,6 +85,9 @@ struct Faults {
   // With ERR_INPROGRESS: answers NULL, and lets the async task run, before returning --
   // as lwIP with no DNS server does, with the task on another core.
   bool dns_fails_inside_the_call = false;
+  // tcpip_init() hasn't run, so on a target tcpip_api_call() and the core lock assert.
+  // Counted here instead, in calls_before_start().
+  bool not_started = false;
 };
 Faults &faults();
 
@@ -146,6 +149,9 @@ pbuf *make_pbuf(const void *data, size_t len);
 // Non-zero if the library made an api call while standing on the LwIP thread, which on a
 // real target would deadlock.
 unsigned reentrant_api_calls();
+
+// Calls to tcpip_api_call() or the TCPIP core lock while faults().not_started was set.
+unsigned calls_before_start();
 
 // Calls into tcp_* or dns_* made neither on the LwIP thread nor under the TCPIP core
 // lock, which on a real target race the LwIP thread.  The first one's name.

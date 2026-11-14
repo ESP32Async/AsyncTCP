@@ -57,6 +57,7 @@ uint16_t g_next_ephemeral = 49152;
 int g_core_lock_depth = 0;
 int g_on_lwip_thread = 0;  // inside tcpip_api_call() or a fire_* helper
 unsigned g_reentrant_api_calls = 0;
+unsigned g_calls_before_start = 0;  // see Faults::not_started
 unsigned g_unlocked_calls = 0;
 std::string g_first_unlocked_call;
 std::vector<const tcp_pcb *> g_aborted;  // every pcb tcp_abort() freed, in order
@@ -484,6 +485,9 @@ extern "C" err_t dns_gethostbyname(const char *hostname, ip_addr_t *addr, dns_fo
 */
 extern "C" err_t tcpip_api_call(tcpip_api_call_fn fn, struct tcpip_api_call_data *call) {
   rec("tcpip_api_call");
+  if (g_faults.not_started) {
+    ++g_calls_before_start;
+  }
   if (g_on_lwip_thread) {
     ++g_reentrant_api_calls;
   }
@@ -516,6 +520,9 @@ extern "C" int sys_thread_tcpip(int) {
 }
 
 extern "C" void mock_lock_tcpip_core(void) {
+  if (g_faults.not_started) {
+    ++g_calls_before_start;
+  }
   g_core_lock_depth++;
 }
 
@@ -607,6 +614,7 @@ void reset() {
   g_faults = Faults{};
   std::vector<PendingDns>().swap(g_dns_queue);
   g_reentrant_api_calls = 0;
+  g_calls_before_start = 0;
   g_unlocked_calls = 0;
   g_first_unlocked_call.clear();
   std::vector<const tcp_pcb *>().swap(g_aborted);
@@ -889,6 +897,10 @@ tcp_pcb *fire_raw_accept(const std::function<err_t(tcp_pcb *)> &accept) {
 
 unsigned reentrant_api_calls() {
   return g_reentrant_api_calls;
+}
+
+unsigned calls_before_start() {
+  return g_calls_before_start;
 }
 
 unsigned unlocked_calls() {

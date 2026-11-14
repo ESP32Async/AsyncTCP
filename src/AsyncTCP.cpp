@@ -1670,6 +1670,9 @@ void AsyncClientImpl::setAckTimeout(uint32_t timeout) {
 }
 
 void AsyncClientImpl::setNoDelay(bool nodelay) const {
+  if (!_pcb) {
+    return;  // without a pcb, skip the lock: LwIP may not be started yet
+  }
   with_tcp_core_lock([&]() {
     if (!_pcb) {
       return ERR_CONN;
@@ -1691,6 +1694,9 @@ bool AsyncClientImpl::getNoDelay() {
 }
 
 void AsyncClientImpl::setKeepAlive(uint32_t ms, uint8_t cnt) {
+  if (!_pcb) {
+    return;  // without a pcb, skip the lock: LwIP may not be started yet
+  }
   with_tcp_core_lock([&]() {
     if (!_pcb) {
       return ERR_CONN;
