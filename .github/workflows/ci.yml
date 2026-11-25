@@ -101,6 +101,21 @@ jobs:
 
           # 2026-09-20 - LibreTiny does not build under PlatformIO 6.2.0 or later.
           # Remove this pin once they've fixed this upstream.
+          - env: ci-arduino-4
+            board: esp32dev
+          - env: ci-arduino-4
+            board: esp32-s2-saola-1
+          - env: ci-arduino-4
+            board: esp32-s3-devkitc-1
+          - env: ci-arduino-4
+            board: esp32-c3-devkitc-02
+          - env: ci-arduino-4
+            board: esp32-c6-devkitc-1
+          - env: ci-arduino-4-esp-idf_log
+            board: esp32dev
+
+          # 2026-09-20 - LibreTiny does not build under PlatformIO 6.2.0 or later.
+          # Remove this pin once they've fixed this upstream.
           - env: ci-arduino-libretiny
             board: generic-bk7231n-qfn32-tuya
             pio_version: "<6.2"
